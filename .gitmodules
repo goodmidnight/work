@@ -1,0 +1,6 @@
+[submodule "cpp/libs/asio"]
+	path = cpp/libs/asio
+	url = https://github.com/chriskohlhoff/asio.git
+[submodule "cpp/libs/flatbuffers"]
+	path = cpp/libs/flatbuffers
+	url = https://github.com/google/flatbuffers.git
