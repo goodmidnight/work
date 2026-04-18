@@ -1,0 +1,39 @@
+namespace transfer.protocol;
+
+enum MessageType : byte {
+    Handshake = 0,
+    HandshakeAck = 1,
+    FileRequest = 2,
+    FileListRequest = 3,
+    FileListResponse = 4,
+    DataChunkHeader = 5,
+    TransferComplete = 6,
+    Error = 7
+}
+
+table Handshake {
+    file_id: string;
+    file_name: string;
+    total_size: uint64;
+    start_offset: uint64; // 이 파이프가 전송을 시작할 위치
+    transmit_size: uint64; // 이 파이프가 전송할 총 크기
+    session_id: uint32;   // 세션 번호 (0, 1, 2...)
+    checksum: uint32;
+}
+
+
+table FileRequest {
+    file_id: string;
+}
+
+table DataChunkHeader {
+    offset: uint64;
+    data_size: uint32;
+}
+
+table Message {
+    type: MessageType;
+    payload: [ubyte];
+}
+
+root_type Message;
