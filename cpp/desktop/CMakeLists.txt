@@ -1,0 +1,2 @@
+add_executable(transfer_desktop main.cpp)
+target_link_libraries(transfer_desktop PRIVATE transfer_core)
