@@ -112,6 +112,10 @@ namespace transfer::core {
                         auto session = std::make_shared<Session>(std::move(*socket), session_manager_);
                         session_manager_->add_session(session);
                         session->start_receive_loop();
+
+                        if (i == 0 && callback_) {
+                            callback_("SYSTEM", TransferState::CONNECTED, 0, "Connected to " + ip);
+                        }
                     } catch (const std::exception& e) {
                         LOGE("[Spoke] Connection tuning error: %s", e.what());
                     }

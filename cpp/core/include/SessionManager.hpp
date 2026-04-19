@@ -13,6 +13,7 @@ namespace transfer::core {
         STARTED = 0,
         PROGRESS = 1,
         COMPLETED = 2,
+        CONNECTED = 3,
         ERROR = -1
     };
 
