@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "io.goodmidnight.scanner"
+    namespace = "io.goodmidnight.transfer"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "io.goodmidnight.scanner"
+        applicationId = "io.goodmidnight.transfer"
         buildFeatures.buildConfig = true
         minSdk = 27
         targetSdk = 36
@@ -32,7 +32,7 @@ android {
 
     externalNativeBuild {
         cmake {
-            path = file("../cpp/android/CMakeLists.txt")
+            path = file("../../cpp/android/CMakeLists.txt")
         }
     }
 
