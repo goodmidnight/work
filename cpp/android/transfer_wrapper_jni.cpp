@@ -5,7 +5,7 @@
 #include "PeerNode.hpp"
 
 // Define the target Kotlin/Java class path
-#define JNI_CLASS_PATH "io/goodmidnight/transfer/TransferEngine"
+#define JNI_CLASS_PATH "io/goodmidnight/transfer/data/jni/TransferEngine"
 
 using namespace transfer::core;
 
