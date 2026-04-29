@@ -30,6 +30,10 @@ android {
         }
     }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     externalNativeBuild {
         cmake {
             path = file("../../cpp/android/CMakeLists.txt")
@@ -60,9 +64,11 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.core.splashscreen)
-
     implementation(libs.hilt.android)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.zxing.core)
 
+    implementation(libs.bundles.androidx.camera)
     implementation(libs.bundles.androidx.compose)
     implementation(libs.bundles.androidx.hilt)
     implementation(libs.bundles.androidx.lifecycle)
