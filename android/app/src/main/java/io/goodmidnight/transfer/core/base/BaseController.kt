@@ -1,4 +1,4 @@
-package io.goodmidnight.transfer.core.controller.base
+package io.goodmidnight.transfer.core.base
 
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
