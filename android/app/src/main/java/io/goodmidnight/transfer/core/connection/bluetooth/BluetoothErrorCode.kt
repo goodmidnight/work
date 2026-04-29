@@ -7,5 +7,6 @@ enum class BluetoothErrorCode(
     override val code: String,
 ) : ErrorCode {
     SCAN_FAILED(message = "Failed to start BLE scan", code = "BLE001"),
-    ADVERTISE_FAILED(message = "Failed to start BLE advertising", code = "BLE002")
+    ADVERTISE_FAILED(message = "Failed to start BLE advertising", code = "BLE002"),
+    GATT_FAILED(message = "Failed to establish GATT connection", code = "BLE003"),
 }
