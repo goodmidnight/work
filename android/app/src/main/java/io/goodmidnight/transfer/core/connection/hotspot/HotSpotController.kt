@@ -4,22 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
-import io.goodmidnight.transfer.core.exception.ApplicationException
-import kotlinx.coroutines.CoroutineName
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
+import io.goodmidnight.transfer.core.base.BaseController
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -27,33 +14,61 @@ import javax.inject.Singleton
  * Controller responsible for managing the Local Only Hotspot.
  * It creates a temporary Wi-Fi Access Point that other devices can connect to.
  * This AP does not provide internet access, making it ideal for secure, high-speed P2P transfers.
- * Note: Requires location and nearby devices permissions to function properly.
+ * Note: Requires Location and Nearby Devices permissions to function properly.
  */
 @Singleton
 @SuppressLint("MissingPermission")
 class HotSpotController @Inject constructor(
     @param:ApplicationContext private val context: Context,
+) : BaseController<HotSpotState, HotSpotEvent, HotSpotEffect, HotSpotException>(
+    "HotSpotController",
+    HotSpotState()
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("HotSpotController"))
-    private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+    private val wifiManager =
+        context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
     // Holds the active hotspot reservation to keep the AP alive and close it later.
     private var reservation: WifiManager.LocalOnlyHotspotReservation? = null
 
-    private val _state = MutableStateFlow(HotSpotState())
-    val state: StateFlow<HotSpotState> = _state.asStateFlow()
+    override suspend fun handleEvent(event: HotSpotEvent) {
+        when (event) {
+            is HotSpotEvent.StartHotspot -> handleStartHotspot()
+            is HotSpotEvent.StopHotspot -> handleStopHotspot()
+        }
+    }
 
-    private val _event = Channel<HotSpotEvent>(
-        capacity = Channel.BUFFERED,
-        onBufferOverflow = BufferOverflow.DROP_LATEST
-    )
+    /**
+     * Requests the OS to spin up a temporary Local Only Hotspot.
+     * Wrapped in runCatching to prevent crashes if the system rejects the request due to missing permissions or hardware limits.
+     */
+    private fun handleStartHotspot() {
+        runCatching {
+            wifiManager.startLocalOnlyHotspot(hotspotListener, null)
+        }.onFailure { e ->
+            Log.w("HotSpotController", "Failed to start Local Only Hotspot", e)
+            emitError(
+                HotSpotException.StartException(
+                    message = "System rejected hotspot start request",
+                    cause = e
+                )
+            )
+        }
+    }
 
-    private val _effect = MutableSharedFlow<HotSpotEffect>()
-    val effect = _effect.asSharedFlow()
+    /**
+     * Tears down the Hotspot and resets the internal state.
+     */
+    private fun handleStopHotspot() {
+        reservation?.let { res ->
+            runCatching { res.close() }
+                .onFailure { e -> Log.w("HotSpotController", "Failed to close hotspot cleanly", e) }
+        }
+        reservation = null
+        updateState { HotSpotState() }
+    }
 
     /**
      * Listener to monitor the lifecycle of the Local Only Hotspot.
-     * Kept private to enforce encapsulation.
      */
     private val hotspotListener = object : WifiManager.LocalOnlyHotspotCallback() {
         override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation?) {
@@ -65,7 +80,7 @@ class HotSpotController @Inject constructor(
             val ssid: String
             val password: String
 
-            // Extract SSID and Password handling modern Android API deprecations securely
+            // Extract SSID and Password securely, handling modern Android API deprecations.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val config = reservation.softApConfiguration
                 ssid = config.wifiSsid?.toString()?.removeSurrounding("\"") ?: "Unknown"
@@ -82,8 +97,8 @@ class HotSpotController @Inject constructor(
                 password = config?.preSharedKey ?: "No Password"
             }
 
-            _state.update {
-                it.copy(
+            updateState {
+                copy(
                     isActive = true,
                     ssid = ssid,
                     password = password
@@ -102,48 +117,12 @@ class HotSpotController @Inject constructor(
         }
     }
 
-    init {
-        observeEvents()
-    }
-
     /**
-     * Exposes a thread-safe method to send user intents to this controller.
+     * Prevents battery drain and system resource leaks by ensuring the hotspot reservation
+     * is safely closed when the controller is destroyed.
      */
-    suspend fun processEvent(event: HotSpotEvent) = _event.send(event)
-
-    private fun observeEvents() {
-        scope.launch {
-            _event.receiveAsFlow().collect { event ->
-                when (event) {
-                    is HotSpotEvent.StartHotspot -> handleStartHotspot()
-                    is HotSpotEvent.StopHotspot -> handleStopHotspot()
-                }
-            }
-        }
-    }
-
-    /**
-     *  Requests the OS to spin up a temporary Local Only Hotspot.
-     */
-    private fun handleStartHotspot() {
-        wifiManager.startLocalOnlyHotspot(hotspotListener, null)
-    }
-
-    /**
-     *  Tears down the Hotspot and resets the internal state.
-     */
-    private fun handleStopHotspot() {
-        reservation?.close()
-        reservation = null
-        _state.update { HotSpotState() }
-    }
-
-    /**
-     *  Helper method to dispatch exceptions securely to the shared effect flow.
-     */
-    private fun emitError(exception: ApplicationException) {
-        scope.launch {
-            _effect.emit(HotSpotEffect.SendError(exception))
-        }
+    override fun clear() {
+        handleStopHotspot()
+        super.clear()
     }
 }
