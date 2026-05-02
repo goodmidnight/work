@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import io.goodmidnight.transfer.data.datastore.SettingsDataSource
+import io.goodmidnight.transfer.data.exception.DataException
 import io.goodmidnight.transfer.domain.model.SettingsData
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -31,7 +32,7 @@ class DefaultSettingsDataSource @Inject constructor(
             if (exception is IOException) {
                 emit(emptyPreferences())
             } else {
-                throw exception
+                throw DataException.DataStoreReadException(cause = exception)
             }
         }
         .map { preferences ->

@@ -1,6 +1,7 @@
 package io.goodmidnight.transfer.data.jni
 
 import android.util.Log
+import io.goodmidnight.transfer.data.exception.DataException
 
 /**
  * A singleton engine wrapper class that communicates directly with the underlying C++ JNI layer.
@@ -18,6 +19,10 @@ object TransferEngine {
             Log.i("TransferEngine", "Native library '$LIB_NAME' loaded successfully.")
         } catch (e: UnsatisfiedLinkError) {
             Log.e("TransferEngine", "Failed to load native library: ${e.message}")
+            throw DataException.NativeLibraryException(
+                message = "C++ Core Library ($LIB_NAME) failed to load. The app cannot perform file transfers.",
+                cause = e
+            )
         }
     }
 

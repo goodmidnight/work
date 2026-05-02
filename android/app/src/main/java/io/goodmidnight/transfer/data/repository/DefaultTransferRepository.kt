@@ -1,5 +1,6 @@
 package io.goodmidnight.transfer.data.repository
 
+import io.goodmidnight.transfer.data.exception.DataException
 import io.goodmidnight.transfer.data.jni.TransferEngine
 import io.goodmidnight.transfer.domain.model.TransferProgress
 import io.goodmidnight.transfer.domain.model.TransferResult
@@ -21,9 +22,10 @@ class DefaultTransferRepository @Inject constructor() : TransferRepository {
 
     // StateFlow to hold the global transfer state, observable by both Services and UI components.
     private val _transferProgressFlow = MutableStateFlow(TransferProgress())
-    override val transferProgressFlow: StateFlow<TransferProgress> = _transferProgressFlow.asStateFlow()
+    override val transferProgressFlow: StateFlow<TransferProgress> =
+        _transferProgressFlow.asStateFlow()
 
-    override suspend fun connectToPeer(ip: String, port: Int) {
+    override fun connectToPeer(ip: String, port: Int) {
         TransferEngine.connectToPeer(ip, port)
     }
 
@@ -40,6 +42,7 @@ class DefaultTransferRepository @Inject constructor() : TransferRepository {
                         )
                     )
                 }
+
                 1 -> {
                     // PROGRESS: File transfer in progress
                     val result = TransferResult.Progress(fileName, progress)
@@ -54,6 +57,7 @@ class DefaultTransferRepository @Inject constructor() : TransferRepository {
                         )
                     )
                 }
+
                 2 -> {
                     // COMPLETED: Single file transfer successfully finished
                     trySend(TransferResult.Completed(fileName))
@@ -67,15 +71,10 @@ class DefaultTransferRepository @Inject constructor() : TransferRepository {
                     )
                     close() // Close the flow stream for this specific file successfully
                 }
+
                 -1 -> {
-                    // ERROR: An error occurred during the transfer
-                    updateProgress(
-                        TransferProgress(
-                            isTransferring = false,
-                            error = msg
-                        )
-                    )
-                    close(Exception(msg)) // Propagate the exception to the UseCase's catch block
+                    updateProgress(TransferProgress(isTransferring = false, error = msg))
+                    close(DataException.TransferEngineException(message = "Engine Error: $msg"))
                 }
             }
         }
