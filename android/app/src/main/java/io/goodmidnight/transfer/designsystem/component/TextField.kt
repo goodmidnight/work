@@ -51,7 +51,7 @@ private fun getMonotoneTextSelectionColors() = TextSelectionColors(
 )
 
 @Composable
-fun WFUnderlineTextField(
+fun UnderlineTextField(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -124,7 +124,7 @@ fun WFUnderlineTextField(
 }
 
 @Composable
-fun WFContainerTextField(
+fun ContainerTextField(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -301,7 +301,7 @@ fun SearchTextFieldPreview(
 
 @ComponentPreview
 @Composable
-private fun WFUnderlineTextFieldsPreview() {
+private fun UnderlineTextFieldsPreview() {
     var text1 by remember { mutableStateOf("입력 중...") }
     var text2 by remember { mutableStateOf("") }
     var text3 by remember { mutableStateOf("잘못된 입력") }
@@ -313,22 +313,22 @@ private fun WFUnderlineTextFieldsPreview() {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            WFUnderlineTextField(
+            UnderlineTextField(
                 value = text1,
                 onValueChange = { text1 = it },
             )
             // 일반 상태
-            WFUnderlineTextField(
+            UnderlineTextField(
                 value = text2,
                 onValueChange = { text2 = it },
             )
             // 에러 상태
-            WFUnderlineTextField(
+            UnderlineTextField(
                 value = text3,
                 onValueChange = { text3 = it },
             )
             // 비활성화 상태
-            WFUnderlineTextField(
+            UnderlineTextField(
                 value = text4,
                 onValueChange = { text4 = it },
                 enabled = false
@@ -339,7 +339,7 @@ private fun WFUnderlineTextFieldsPreview() {
 
 @ComponentPreview
 @Composable
-private fun WFContainerTextFieldsPreview() {
+private fun ContainerTextFieldsPreview() {
     var text1 by remember { mutableStateOf("입력 중...") }
     var text2 by remember { mutableStateOf("") }
     var text3 by remember { mutableStateOf("잘못된 입력") }
@@ -351,22 +351,19 @@ private fun WFContainerTextFieldsPreview() {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            WFContainerTextField(
+            ContainerTextField(
                 value = text1,
                 onValueChange = { text1 = it },
             )
-            // 일반 상태
-            WFContainerTextField(
+            ContainerTextField(
                 value = text2,
                 onValueChange = { text2 = it },
             )
-            // 에러 상태
-            WFContainerTextField(
+            ContainerTextField(
                 value = text3,
                 onValueChange = { text3 = it },
             )
-            // 비활성화 상태
-            WFContainerTextField(
+            ContainerTextField(
                 value = text4,
                 onValueChange = { text4 = it },
                 enabled = false

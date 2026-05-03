@@ -130,7 +130,7 @@ fun SearchTopBar(
 @ComponentPreview
 fun TitleTopBarPreview() {
     Theme {
-        TitleTopBar("타이틀", onBack = {})
+        TitleTopBar("Title", onBack = {})
     }
 }
 
@@ -138,7 +138,7 @@ fun TitleTopBarPreview() {
 @ComponentPreview
 fun MainTopBarPreview() {
     Theme {
-        MainTopBar("타이틀")
+        MainTopBar("Title")
     }
 }
 
