@@ -40,8 +40,7 @@ namespace transfer::core {
         void send_next_chunk();
 
         // --- Data Transmission Pipeline ---
-        void send_chunk_zerocopy(uint32_t chunk_size);
-        void send_chunk_encrypted(uint32_t chunk_size);
+        void send_chunk(uint32_t chunk_size);
 
         void cleanup_resources();
 

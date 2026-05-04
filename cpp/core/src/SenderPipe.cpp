@@ -24,12 +24,16 @@ namespace transfer::core {
         session_id_ = session_id;
         std::error_code ec;
 
+        LOGI("[Sender %d] Attempting to map file: %s (Size: %llu)", session_id, file_path.c_str(), length);
+
         // Extract just the filename for UI progress reporting
         send_file_name_ = std::filesystem::path(file_path).filename().string();
         send_total_file_size_ = std::filesystem::file_size(file_path, ec);
 
         send_offset_ = offset;
         send_file_size_limit_ = offset + length;
+
+        LOGI("[Sender %d] Total file size: %llu, Offset: %llu, Length: %llu", session_id_, send_total_file_size_, offset, length);
 
         // Open the physical file in read-only mode
         send_fd_ = ::open(file_path.c_str(), O_RDONLY);
@@ -38,6 +42,8 @@ namespace transfer::core {
             manager_->notify_transfer_error(send_file_name_, "Failed to open file for sending.");
             return;
         }
+
+        LOGI("[Sender %d] Calling mmap...", session_id_);
 
         // --- Memory Mapping (mmap) Setup ---
         // Map the entire file into virtual memory.
@@ -50,17 +56,20 @@ namespace transfer::core {
             manager_->notify_transfer_error(send_file_name_, "Failed to mmap file.");
             return;
         }
+        LOGI("[Sender %d] mmap success. Base Address: %p", session_id_, (void*)send_mmap_ptr_);
 
         // Pre-allocate staging buffer for the encryption path to avoid reallocation penalties
         if (!manager_->get_encryption_key().empty()) {
             crypto_buffer_.resize(CHUNK_SIZE + 28);
         }
 
+        LOGI("[Sender %d] Triggering Handshake through parent_session.", session_id_);
         // Data preparation is done. Ask the parent Session (Control Plane) to execute the Handshake.
         parent_session_->send_handshake(send_file_name_, send_total_file_size_, offset, length, session_id, 0);
     }
 
     void SenderPipe::on_handshake_acked(uint64_t resume_offset) {
+        LOGI("[Sender %d] Handshake ACK received. Resume offset: %llu", session_id_, resume_offset);
         // The receiver told us they already have some bytes.
         // We simply jump our pointer forward to avoid re-transmitting existing data!
         if (resume_offset > 0) {
@@ -74,6 +83,7 @@ namespace transfer::core {
 
     void SenderPipe::send_next_chunk() {
         // Exit condition: We have successfully pushed our assigned byte range
+        LOGI("[Sender %d] Next chunk: Offset %llu / Limit %llu", session_id_, send_offset_, send_file_size_limit_);
         if (send_offset_ >= send_file_size_limit_) {
             LOGI("[Sender %d] Chunk transfer completed.", session_id_);
             cleanup_resources();
@@ -84,23 +94,27 @@ namespace transfer::core {
         uint64_t remaining = send_file_size_limit_ - send_offset_;
         uint32_t chunk = (remaining < CHUNK_SIZE) ? static_cast<uint32_t>(remaining) : CHUNK_SIZE;
 
+        LOGI("[Sender %d] Prepared chunk size: %u bytes", session_id_, chunk);
+
         if (manager_->get_encryption_key().empty()) {
-            send_chunk_zerocopy(chunk);
+            send_chunk(chunk);
         } else {
-            send_chunk_encrypted(chunk);
+            //TODO: Not Implement
+            send_chunk(chunk);
         }
     }
 
-    void SenderPipe::send_chunk_zerocopy(uint32_t chunk_size) {
+    void SenderPipe::send_chunk(uint32_t chunk_size) {
+        LOGI("[Sender %d] Entering Zerocopy write. Pointer: %p", session_id_, (void*)(send_mmap_ptr_ + send_offset_));
         auto self(shared_from_this());
 
-        // [Zero-Copy Magic]
         // We pass the memory-mapped pointer directly to the ASIO write function.
         // The data flows directly from the Disk Cache -> Kernel Network Stack -> NIC (Network Card),
         // completely bypassing expensive copies into the application's user-space RAM!
         asio::async_write(*socket_, asio::buffer(send_mmap_ptr_ + send_offset_, chunk_size),
             [this, self, chunk_size](std::error_code ec, std::size_t length) {
                 if (!ec) {
+                    LOGI("[Sender %d] Async write success. Length: %zu", session_id_, length);
                     send_offset_ += length;
 
                     // Push real-time progress updates up to the UI
@@ -112,41 +126,10 @@ namespace transfer::core {
                     // Recursively push the next chunk
                     send_next_chunk();
                 } else {
+                    LOGE("[Sender %d] Async write error: %s", session_id_, ec.message().c_str());
                     if (ec != asio::error::operation_aborted) {
                         manager_->notify_transfer_error(send_file_name_, "Data write fail: " + ec.message());
                     }
-                    cleanup_resources();
-                    parent_session_->close_socket();
-                    manager_->notify_transfer_finished(false);
-                }
-            });
-    }
-
-    void SenderPipe::send_chunk_encrypted(uint32_t chunk_size) {
-        auto self(shared_from_this());
-
-        // Encryption requires loading the data into user-space, encrypting it,
-        // and appending MAC/IV tags. We copy it to the staging buffer.
-        size_t encrypted_length = chunk_size;
-        std::memcpy(crypto_buffer_.data(), send_mmap_ptr_ + send_offset_, chunk_size);
-        // Note: Production AES-GCM logic goes here, modifying crypto_buffer_ and encrypted_length.
-
-        // Send the encrypted staging buffer
-        asio::async_write(*socket_, asio::buffer(crypto_buffer_.data(), encrypted_length),
-            [this, self, chunk_size](std::error_code ec, std::size_t) {
-                if (!ec) {
-                    // Always advance the offset by the *plaintext* chunk size
-                    send_offset_ += chunk_size;
-
-                    // Progress update
-                    if (auto cb = manager_->get_callback()) {
-                        int progress_pct = static_cast<int>((send_offset_ * 100) / send_total_file_size_);
-                        cb(send_file_name_, TransferState::PROGRESS, progress_pct, "Sending...");
-                    }
-
-                    send_next_chunk();
-                } else {
-                    manager_->notify_transfer_error(send_file_name_, "Encrypted write fail: " + ec.message());
                     cleanup_resources();
                     parent_session_->close_socket();
                     manager_->notify_transfer_finished(false);

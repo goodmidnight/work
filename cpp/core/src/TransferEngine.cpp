@@ -4,13 +4,12 @@
 #include "Logger.hpp"
 
 namespace transfer::core {
-
-    TransferEngine::TransferEngine() 
+    TransferEngine::TransferEngine()
         : peer_node_(std::make_unique<PeerNode>()),
           session_manager_(std::make_shared<SessionManager>()) {
-          
-        peer_node_->set_connection_handler([this](asio::ip::tcp::socket socket) {
-            auto session = std::make_shared<Session>(std::move(socket), session_manager_);
+
+        peer_node_->set_connection_handler([this](std::shared_ptr<asio::ip::tcp::socket> socket) {
+            auto session = std::make_shared<Session>(socket, session_manager_);
             session_manager_->add_session(session);
             session->start_receive_loop();
         });
@@ -28,7 +27,7 @@ namespace transfer::core {
         session_manager_->set_fd_callback(callback);
     }
 
-    void TransferEngine::set_encryption_key(const std::string& key) const {
+    void TransferEngine::set_encryption_key(const std::string &key) const {
         session_manager_->set_encryption_key(key);
         LOGI("[TransferEngine] E2E Encryption Key loaded.");
     }
@@ -38,17 +37,19 @@ namespace transfer::core {
         return peer_node_->startReceiver(port);
     }
 
-    void TransferEngine::startSender(const std::string& ip, uint16_t port, int session_count) const {
+    void TransferEngine::startSender(const std::string &ip, uint16_t port, int session_count) const {
         peer_node_->start();
         peer_node_->startSender(ip, port, session_count);
     }
 
-    void TransferEngine::send_file(const std::string& file_path) const {
-        peer_node_->send_file(file_path);
+    void TransferEngine::pushFile(const std::string &file_path) const {
+        if (session_manager_) {
+            LOGI("[TransferEngine] Pushing file to SessionManager: %s", file_path.c_str());
+            session_manager_->push_to_single_peer(file_path);
+        }
     }
 
     void TransferEngine::stop() const {
         peer_node_->stop();
     }
-
 } // namespace transfer::core

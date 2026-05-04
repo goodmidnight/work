@@ -17,7 +17,7 @@ namespace transfer::core {
     /**
      * @brief Callback type to delegate the successfully connected raw socket to the upper layer.
      */
-    using ConnectionHandler = std::function<void(asio::ip::tcp::socket)>;
+    using ConnectionHandler = std::function<void(std::shared_ptr<asio::ip::tcp::socket>)>;
 
     /**
      * @class PeerNode

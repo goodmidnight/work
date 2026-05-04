@@ -5,7 +5,6 @@
 #include <string>
 
 namespace transfer::core {
-
     class SessionManager;
     class SenderPipe;
     class ReceiverPipe;
@@ -21,7 +20,7 @@ namespace transfer::core {
      */
     class Session : public std::enable_shared_from_this<Session> {
     public:
-        Session(asio::ip::tcp::socket socket, std::shared_ptr<SessionManager> manager);
+        Session(std::shared_ptr<asio::ip::tcp::socket> socket, std::shared_ptr<SessionManager> manager);
         ~Session();
 
         /**
@@ -40,7 +39,8 @@ namespace transfer::core {
          * @brief Constructs and sends the protocol Handshake via Flatbuffers.
          *        This is called by the SenderPipe right before initiating data transfer.
          */
-        void send_handshake(const std::string &file_name, uint64_t total_size, uint64_t offset, uint64_t length, uint32_t session_id, uint32_t checksum);
+        void send_handshake(const std::string &file_name, uint64_t total_size, uint64_t offset, uint64_t length,
+                            uint32_t session_id, uint32_t checksum);
 
         /**
          * @brief Safely shuts down and closes the TCP socket, sending a FIN packet.
@@ -50,6 +50,7 @@ namespace transfer::core {
         // --- Cross-Platform Utility Functions ---
         // Converts 64-bit integers to and from network byte order (Big-Endian).
         static void serialize_uint64(uint64_t val, uint8_t *buf);
+
         static uint64_t deserialize_uint64(const uint8_t *buf);
 
     private:
@@ -69,5 +70,4 @@ namespace transfer::core {
         std::shared_ptr<SenderPipe> sender_pipe_;
         std::shared_ptr<ReceiverPipe> receiver_pipe_;
     };
-
 } // namespace transfer::core

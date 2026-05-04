@@ -35,8 +35,7 @@ namespace transfer::core {
 
         // --- Data Reception Pipeline ---
         void receive_raw_data();
-        void receive_chunk_zerocopy(uint32_t chunk_size);
-        void receive_chunk_encrypted(uint32_t chunk_size);
+        void receive_chunk(uint32_t chunk_size);
 
         // --- Utility & Cleanup ---
         void send_handshake_ack(uint64_t saved_progress);

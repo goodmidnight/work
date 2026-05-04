@@ -172,13 +172,14 @@ namespace transfer::core {
         uint32_t chunk = (remaining < CHUNK_SIZE) ? static_cast<uint32_t>(remaining) : CHUNK_SIZE;
 
         if (manager_->get_encryption_key().empty()) {
-            receive_chunk_zerocopy(chunk);
+            receive_chunk(chunk);
         } else {
-            receive_chunk_encrypted(chunk);
+            //TODO: Not Implement
+            receive_chunk(chunk);
         }
     }
 
-    void ReceiverPipe::receive_chunk_zerocopy(uint32_t chunk_size) {
+    void ReceiverPipe::receive_chunk(uint32_t chunk_size) {
         auto self(shared_from_this());
 
         // [Zero-Copy Magic]
@@ -211,38 +212,6 @@ namespace transfer::core {
                                          manager_->notify_transfer_finished(false); // Notify manager of pipe failure
                                      }
                                  });
-    }
-
-    void ReceiverPipe::receive_chunk_encrypted(uint32_t chunk_size) {
-        auto self(shared_from_this());
-        uint32_t encrypted_chunk_size = chunk_size + 28;
-
-        // Since encrypted data has a MAC tag and IV, we must first read into a staging buffer (crypto_buffer_)
-        asio::async_read(*socket_, asio::buffer(crypto_buffer_.data(), encrypted_chunk_size),
-                         [this, self, chunk_size](std::error_code ec, std::size_t) {
-                             if (!ec) {
-                                 // Note: In a production app, insert EVP_aes_256_gcm decryption logic here.
-                                 // The decrypted plaintext is then copied directly into the memory-mapped file.
-                                 std::memcpy(recv_mmap_ptr_ + recv_offset_, crypto_buffer_.data(), chunk_size);
-
-                                 recv_offset_ += chunk_size;
-                                 meta_mmap_ptr_[session_id_] += chunk_size;
-
-                                 // Progress update
-                                 if (auto cb = manager_->get_callback()) {
-                                     int progress_pct = static_cast<int>((recv_offset_ * 100) / recv_total_file_size_);
-                                     cb(recv_file_name_, TransferState::PROGRESS, progress_pct, "Receiving...");
-                                 }
-
-                                 receive_raw_data();
-                             } else {
-                                 manager_->notify_transfer_error(recv_file_name_,
-                                                                 "Encrypted read fail: " + ec.message());
-                                 cleanup_resources();
-                                 parent_session_->close_socket();
-                                 manager_->notify_transfer_finished(false);
-                             }
-                         });
     }
 
     void ReceiverPipe::cleanup_resources() {

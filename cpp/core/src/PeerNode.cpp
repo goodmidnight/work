@@ -3,7 +3,6 @@
 #include "Logger.hpp"
 
 namespace transfer::core {
-
     PeerNode::PeerNode() : io_context_(),
                            work_guard_(asio::make_work_guard(io_context_)),
                            acceptor_(io_context_),
@@ -99,7 +98,8 @@ namespace transfer::core {
 
                     // Transfer socket ownership to the upper Facade layer (TransferEngine) for Session assembly
                     if (connection_handler_) {
-                        connection_handler_(std::move(socket));
+                        auto socket_ptr = std::make_shared<asio::ip::tcp::socket>(std::move(socket));
+                        connection_handler_(socket_ptr);
                     }
                 } catch (const std::exception &e) {
                     LOGE("[Hub] Socket tuning failed: %s", e.what());
@@ -123,7 +123,7 @@ namespace transfer::core {
         // Establish multiple parallel TCP connections (Pipes) for maximum throughput
         for (int i = 0; i < session_count; ++i) {
             auto socket = std::make_shared<asio::ip::tcp::socket>(io_context_);
-            asio::ip::tcp::endpoint endpoint(asio::ip::make_address(ip), port);
+            auto endpoint = asio::ip::tcp::endpoint(asio::ip::make_address(ip), port);
 
             // Asynchronously connect to the target endpoint
             socket->async_connect(endpoint, [this, socket, i, ip](std::error_code ec) {
@@ -137,7 +137,7 @@ namespace transfer::core {
 
                         // Transfer socket ownership to the Facade layer
                         if (connection_handler_) {
-                            connection_handler_(std::move(*socket));
+                            connection_handler_(socket);
                         }
 
                         // Notify the UI layer only once upon the first successful pipe connection
@@ -165,5 +165,4 @@ namespace transfer::core {
             }
         });
     }
-
 } // namespace transfer::core

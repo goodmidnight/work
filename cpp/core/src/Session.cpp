@@ -31,11 +31,9 @@ namespace transfer::core {
         return val;
     }
 
-    Session::Session(asio::ip::tcp::socket socket, std::shared_ptr<SessionManager> manager)
-        // We wrap the socket in a shared_ptr immediately.
-        // This prevents Use-After-Free segfaults when passing the socket to asynchronous Pipe handlers.
-        : socket_(std::make_shared<asio::ip::tcp::socket>(std::move(socket))),
-          manager_(std::move(manager)) {
+    Session::Session(std::shared_ptr<asio::ip::tcp::socket> socket, std::shared_ptr<SessionManager> manager)
+          : socket_(std::move(socket)),
+            manager_(std::move(manager)) {
     }
 
     Session::~Session() {
