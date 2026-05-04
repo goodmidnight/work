@@ -3,66 +3,71 @@
 #include <asio.hpp>
 #include <memory>
 #include <string>
-#include <vector>
-#include <filesystem>
 
 namespace transfer::core {
-    class SessionManager;
 
+    class SessionManager;
+    class SenderPipe;
+    class ReceiverPipe;
+
+    /**
+     * @class Session
+     * @brief Acts as the "Control Plane" for a single TCP connection.
+     *        It owns the socket, manages the initial Flatbuffers handshake protocol,
+     *        and delegates the heavy file I/O to the "Data Plane" (SenderPipe/ReceiverPipe).
+     *
+     * @note Inherits from std::enable_shared_from_this to ensure the Session object
+     *       is not destroyed while asynchronous ASIO callbacks are still pending.
+     */
     class Session : public std::enable_shared_from_this<Session> {
     public:
         Session(asio::ip::tcp::socket socket, std::shared_ptr<SessionManager> manager);
         ~Session();
 
-        void start_receive_loop();
-
-        // 암호화 키 파라미터 제거
+        /**
+         * @brief Spoke (Sender) Entry Point:
+         *        Initializes the SenderPipe to push a specific byte range of a file.
+         */
         void start_push_range(const std::string &file_path, uint64_t offset, uint64_t length, uint32_t session_id);
 
-    private:
-        enum class RecvState { WAIT_HANDSHAKE, RECEIVING_DATA };
+        /**
+         * @brief Hub (Receiver) Entry Point:
+         *        Initializes the ReceiverPipe to start listening for incoming stream data.
+         */
+        void start_receive_loop();
 
+        /**
+         * @brief Constructs and sends the protocol Handshake via Flatbuffers.
+         *        This is called by the SenderPipe right before initiating data transfer.
+         */
         void send_handshake(const std::string &file_name, uint64_t total_size, uint64_t offset, uint64_t length, uint32_t session_id, uint32_t checksum);
+
+        /**
+         * @brief Safely shuts down and closes the TCP socket, sending a FIN packet.
+         */
+        void close_socket() const;
+
+        // --- Cross-Platform Utility Functions ---
+        // Converts 64-bit integers to and from network byte order (Big-Endian).
+        static void serialize_uint64(uint64_t val, uint8_t *buf);
+        static uint64_t deserialize_uint64(const uint8_t *buf);
+
+    private:
+        /**
+         * @brief Waits for the receiver to acknowledge the Handshake.
+         *        The receiver will reply with an 8-byte progress value for resume capabilities.
+         */
         void receive_handshake_ack();
-        void send_next_chunk();
 
-        void receive_header();
-        void receive_handshake_payload(uint32_t payload_size);
-        void receive_raw_data();
+        // Shared ownership of the socket ensures it stays alive as long as any Pipe or Session needs it.
+        std::shared_ptr<asio::ip::tcp::socket> socket_;
 
-        void cleanup_send_resources();
-        void cleanup_recv_resources();
-        void close_socket();
-
-        static void serialize_uint64(uint64_t val, uint8_t* buf);
-        static uint64_t deserialize_uint64(const uint8_t* buf);
-
-        asio::ip::tcp::socket socket_;
+        // Reference to the global orchestrator.
         std::shared_ptr<SessionManager> manager_;
-        uint32_t session_id_ = 0;
 
-        // --- Send-side variables ---
-        int send_fd_ = -1;
-        uint8_t *send_mmap_ptr_ = nullptr;
-        uint64_t send_total_file_size_ = 0;
-        uint64_t send_file_size_limit_ = 0;
-        uint64_t send_offset_ = 0;
-        const uint32_t CHUNK_SIZE = 1024 * 1024 * 4;
-
-        // --- Receive-side variables ---
-        RecvState recv_state_ = RecvState::WAIT_HANDSHAKE;
-        int recv_fd_ = -1;
-        uint8_t *recv_mmap_ptr_ = nullptr;
-        uint64_t recv_total_file_size_ = 0;
-        uint64_t recv_offset_ = 0;
-        uint64_t recv_limit_ = 0;
-        std::string recv_file_name_;
-        uint32_t inbound_header_ = 0;
-        std::vector<uint8_t> recv_buffer_;
-
-        // 이어받기 메타 파일 변수
-        int meta_fd_ = -1;
-        uint64_t *meta_mmap_ptr_ = nullptr;
-        const size_t META_FILE_SIZE = 64;
+        // Dedicated Data Plane handlers. Only one will be instantiated per Session.
+        std::shared_ptr<SenderPipe> sender_pipe_;
+        std::shared_ptr<ReceiverPipe> receiver_pipe_;
     };
+
 } // namespace transfer::core
