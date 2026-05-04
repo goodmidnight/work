@@ -1,13 +1,13 @@
-package io.goodmidnight.transfer.ui.feature.transfer.room.navigation
+package io.goodmidnight.transfer.ui.feature.transfer.qr.navigation
 
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
-import io.goodmidnight.transfer.ui.core.utils.sharedViewModel
+import io.goodmidnight.transfer.ui.core.navigation.sharedViewModel
 import io.goodmidnight.transfer.ui.feature.transfer.shared.SharedViewModel
 
-fun NavGraphBuilder.roomScreen(
+fun NavGraphBuilder.qrScreen(
     modifier: Modifier = Modifier,
     navController: NavController,
     route: String,
@@ -16,6 +16,6 @@ fun NavGraphBuilder.roomScreen(
 
     composable(route) {
         val sharedViewModel = it.sharedViewModel<SharedViewModel>(navController)
-        RoomRoute(modifier, popBackStack, sharedViewModel)
+        QrRoute(modifier, popBackStack, sharedViewModel)
     }
 }
