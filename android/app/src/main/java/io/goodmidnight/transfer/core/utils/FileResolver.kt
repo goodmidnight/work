@@ -21,8 +21,6 @@ class FileResolver @Inject constructor(
     /**
      * Copies the content of a Uri to the app's temporary cache folder and returns the absolute path.
      * This is a crucial preprocessing step because the C++ engine (POSIX API) requires a direct file path.
-     *
-     * Uses [Dispatchers.IO] to ensure Main-Safe execution during heavy file I/O operations.
      */
     suspend fun getAbsolutePathFromUri(uri: Uri): String? = withContext(Dispatchers.IO) {
         val contentResolver = context.contentResolver
@@ -76,12 +74,10 @@ class FileResolver @Inject constructor(
 
     /**
      * Deletes all temporary files inside the cache directory.
-     * Returns true if successful, false otherwise.
      */
     suspend fun clearAllCacheFiles(): Boolean = withContext(Dispatchers.IO) {
         try {
             val cacheDir = context.cacheDir
-            // Delete all contents and recreate an empty directory
             if (cacheDir.exists()) {
                 cacheDir.deleteRecursively()
                 cacheDir.mkdirs()
@@ -116,7 +112,6 @@ class FileResolver @Inject constructor(
         val units = arrayOf("B", "KB", "MB", "GB", "TB")
         val digitGroups = (log10(size.toDouble()) / log10(1024.0)).toInt()
 
-        // Display up to 1 decimal place
         return DecimalFormat("#,##0.#").format(
             size / 1024.0.pow(digitGroups.toDouble())
         ) + " " + units[digitGroups]
