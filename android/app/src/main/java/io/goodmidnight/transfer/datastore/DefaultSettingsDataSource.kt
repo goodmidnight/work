@@ -6,7 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
-import io.goodmidnight.transfer.data.datastore.SettingsDataSource
+import io.goodmidnight.transfer.data.datasource.SettingsDataSource
 import io.goodmidnight.transfer.data.exception.DataException
 import io.goodmidnight.transfer.domain.model.SettingsData
 import kotlinx.coroutines.flow.Flow

@@ -1,4 +1,4 @@
-package io.goodmidnight.transfer.data.datastore
+package io.goodmidnight.transfer.data.datasource
 
 import io.goodmidnight.transfer.domain.model.SettingsData
 import kotlinx.coroutines.flow.Flow
