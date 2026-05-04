@@ -1,8 +1,8 @@
 # Find the flatc compiler
 find_program(FLATC_EXECUTABLE flatc)
-if(NOT FLATC_EXECUTABLE)
+if (NOT FLATC_EXECUTABLE)
     message(FATAL_ERROR "flatc (FlatBuffers compiler) not found. Please verify the installation.")
-endif()
+endif ()
 
 # Define paths
 set(FBS_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/proto/transfer_protocol.fbs")
@@ -23,6 +23,9 @@ set(CORE_SOURCES
         src/PeerNode.cpp
         src/SessionManager.cpp
         src/Session.cpp
+        src/TransferEngine.cpp
+        src/SenderPipe.cpp
+        src/ReceiverPipe.cpp
         "${GEN_HEADER}"
 )
 
@@ -45,6 +48,6 @@ target_include_directories(transfer_core PUBLIC
 )
 
 # Link the thread library on UNIX environments (excluding macOS and Android)
-if(UNIX AND NOT APPLE AND NOT ANDROID)
+if (UNIX AND NOT APPLE AND NOT ANDROID)
     target_link_libraries(transfer_core PUBLIC pthread)
-endif()
+endif ()
