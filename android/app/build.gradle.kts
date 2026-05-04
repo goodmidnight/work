@@ -64,6 +64,7 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.core.splashscreen)
+    implementation(libs.androidx.documentfile)
     implementation(libs.hilt.android)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.zxing.core)
