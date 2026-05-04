@@ -1,4 +1,4 @@
-package io.goodmidnight.transfer.ui.feature.transfer.room.data
+package io.goodmidnight.transfer.ui.feature.transfer.progress.data
 
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.goodmidnight.transfer.ui.core.exception.AppError
@@ -6,26 +6,25 @@ import io.goodmidnight.transfer.ui.core.viewmodel.BaseViewModel
 import javax.inject.Inject
 
 @HiltViewModel
-class RoomViewModel @Inject constructor(
-) : BaseViewModel<RoomState, RoomEvent, RoomEffect, AppError>() {
+class ProgressViewModel @Inject constructor(
+) : BaseViewModel<ProgressState, ProgressEvent, ProgressEffect, AppError>(ProgressState()) {
 
 
     init {
         bindEvent { event ->
             when (event) {
-                RoomEvent.OnBack -> back()
+                ProgressEvent.OnBack -> back()
             }
         }
         bindError { error ->
             error.handleError()
-            error.uiMessage?.let { emitEffect(RoomEffect.ShowSnackBar(it)) }
+            error.uiMessage?.let { emitEffect(ProgressEffect.ShowSnackBar(it)) }
         }
     }
 
-    override fun createInitialState(): RoomState = RoomState()
 
 
     private suspend fun back() {
-        emitEffect(RoomEffect.PopBackStack)
+        emitEffect(ProgressEffect.PopBackStack)
     }
 }
