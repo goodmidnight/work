@@ -4,65 +4,92 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <functional>
 #include "SessionManager.hpp"
-
-#ifdef __ANDROID__
-    #include <android/log.h>
-    #define LOG_TAG "TransferCore"
-    #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-    #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#else
-    #include <cstdio>
-    #define LOGI(...) printf("[INFO] " __VA_ARGS__); printf("\n")
-    #define LOGE(...) fprintf(stderr, "[ERROR] " __VA_ARGS__); fprintf(stderr, "\n")
-#endif
 
 namespace transfer::core {
 
+    /**
+     * @brief Callback type for requesting a File Descriptor from the host platform (e.g., Android SAF, iOS).
+     */
+    using FdRequestCallback = std::function<int(const std::string &)>;
+
+    /**
+     * @brief Callback type to delegate the successfully connected raw socket to the upper layer.
+     */
+    using ConnectionHandler = std::function<void(asio::ip::tcp::socket)>;
+
+    /**
+     * @class PeerNode
+     * @brief Core networking infrastructure responsible for establishing and managing TCP connections.
+     *        It operates strictly on the network layer and does not handle application-level protocols.
+     */
     class PeerNode {
     public:
         PeerNode();
         ~PeerNode();
 
-        // Starts the ASIO event loop in a background thread.
+        /**
+         * @brief Starts the ASIO event loop in a dedicated background worker thread.
+         */
         void start();
 
-        // Cancels all ongoing asynchronous operations and stops the thread.
+        /**
+         * @brief Safely terminates the event loop, closes the acceptor, and joins the worker thread.
+         */
         void stop();
 
-        // Server Mode (Hub): Listens for incoming connections on the specified port.
-        bool start_listening(uint16_t port);
+        /**
+         * @brief Receiver Mode: Opens a port and begins asynchronously accepting incoming connections.
+         * @param port The TCP port to listen on.
+         * @return True if successfully bound and listening, false otherwise.
+         */
+        bool startReceiver(uint16_t port);
 
-        // Client Mode (Spoke): Establishes multiple parallel connections (pipes) to the target IP.
-        void connect_to_peer(const std::string& ip, uint16_t port, int session_count = 4);
+        /**
+         * @brief Sender Mode: Establishes multiple parallel TCP connections to the target endpoint.
+         * @param ip The target IPv4 address.
+         * @param port The target TCP port.
+         * @param session_count Number of parallel TCP pipes to establish (default: 4).
+         */
+        void startSender(const std::string &ip, uint16_t port, int session_count = 4);
 
-        // Starts a 1:1 file transfer to the connected peer.
-        void send_file(const std::string& file_path);
+        /**
+         * @brief Enqueues a file transfer task to the active sessions.
+         * @param file_path The absolute path of the file to send.
+         */
+        void pushFile(const std::string &file_path);
 
-        // Injects a callback function to report transfer state/progress to the upper layer (UI/JNI).
+        // --- Dependency Injection Methods ---
         void set_transfer_callback(TransferCallback callback);
+        void set_fd_request_callback(FdRequestCallback callback);
+        void set_encryption_key(const std::string &key);
+
+        void set_connection_handler(ConnectionHandler handler) {
+            connection_handler_ = std::move(handler);
+        }
+
+        std::shared_ptr<SessionManager> get_session_manager() const {
+            return session_manager_;
+        }
 
     private:
-        // Asynchronously accepts incoming connection requests.
+        /**
+         * @brief Asynchronously waits for and processes incoming client connections.
+         */
         void do_accept();
 
-        // Core engine for asynchronous I/O operations.
+        // Optimized socket buffer size for gigabit-level local network transfers (8MB)
+        static constexpr size_t TCP_BUFFER_SIZE = 8 * 1024 * 1024;
+
         asio::io_context io_context_;
-
-        // Prevents io_context_.run() from returning immediately when there is no work.
         asio::executor_work_guard<asio::io_context::executor_type> work_guard_;
-
-        // Independent thread to run io_context_.run().
         std::thread worker_thread_;
-
-        // ASIO object responsible for accepting connections.
         asio::ip::tcp::acceptor acceptor_;
 
-        // Manager that handles sessions and coordinates the parallel transfer logic.
+        ConnectionHandler connection_handler_;
+        TransferCallback transfer_callback_;
         std::shared_ptr<SessionManager> session_manager_;
-
-        // Callback object to store the injected function.
-        TransferCallback callback_;
     };
 
 } // namespace transfer::core
