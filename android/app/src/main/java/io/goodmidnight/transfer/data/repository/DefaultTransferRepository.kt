@@ -1,39 +1,95 @@
 package io.goodmidnight.transfer.data.repository
 
+import io.goodmidnight.transfer.data.datasource.AndroidFileDataSource
+import io.goodmidnight.transfer.data.datasource.SettingsDataSource
 import io.goodmidnight.transfer.data.exception.DataException
 import io.goodmidnight.transfer.data.jni.TransferEngine
 import io.goodmidnight.transfer.domain.model.TransferProgress
 import io.goodmidnight.transfer.domain.model.TransferResult
 import io.goodmidnight.transfer.domain.repository.TransferRepository
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * The concrete implementation of [TransferRepository] handling the actual data transfer domain.
+ * [DefaultTransferRepository]
+ * - The core data layer implementation that bridges the Kotlin Domain layer with the high-speed Native C++ JNI layer (TransferEngine).
  */
 @Singleton
-class DefaultTransferRepository @Inject constructor() : TransferRepository {
+class DefaultTransferRepository @Inject constructor(
+    private val settingsDataSource: SettingsDataSource,
+    private val fileDataSource: AndroidFileDataSource,
+) : TransferRepository {
 
-    // StateFlow to hold the global transfer state, observable by both Services and UI components.
+    // Global state container for transfer progress, observable by UI and background services.
     private val _transferProgressFlow = MutableStateFlow(TransferProgress())
     override val transferProgressFlow: StateFlow<TransferProgress> =
         _transferProgressFlow.asStateFlow()
 
-    override fun connectToPeer(ip: String, port: Int) {
-        TransferEngine.connectToPeer(ip, port)
+    // @Volatile ensures thread-safe, memory-visible reads across CPU cores.
+    // This is strictly required because the C++ JNI callback executes on a separate ASIO worker thread
+    // and cannot safely invoke suspend functions or wait for disk I/O.
+    @Volatile
+    private var currentSaveLocation: String = "Downloads/Transfer"
+
+    private val repositoryScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("DefaultTransferRepository"))
+
+    init {
+        // Asynchronous Settings Caching
+        // Continuously observe DataStore and update the volatile memory cache.
+        // This guarantees zero-latency reads when the C++ layer requests a file path.
+        repositoryScope.launch {
+            settingsDataSource.settingsFlow.collect { settings ->
+                currentSaveLocation = settings.saveLocation
+            }
+        }
+
+        // Synchronous File Descriptor Request Callback (Triggered by Native C++)
+        TransferEngine.setFdRequestCallback { fileName ->
+            if (fileName.endsWith(".meta")) {
+                // A. Delegate hidden resume-metadata file creation
+                return@setFdRequestCallback fileDataSource.createMetaFileDescriptor(fileName)
+            } else {
+                // B. Delegate actual media file creation using the pre-cached relative path
+                // e.g., Extract "MyTransfer" from "Downloads/MyTransfer"
+                val relativePath =
+                    this.currentSaveLocation.substringAfter("Downloads/").ifEmpty { "Transfer" }
+                return@setFdRequestCallback fileDataSource.createTransferFileDescriptor(
+                    fileName,
+                    relativePath
+                )
+            }
+        }
     }
 
-    override fun sendFile(absolutePath: String): Flow<TransferResult> = callbackFlow {
+    // ========================================================================
+    // Transfer Control Commands
+    // ========================================================================
+
+    override fun startReceiver(port: Int): Boolean {
+        return TransferEngine.startReceiver(port)
+    }
+
+    override fun startSender(ip: String, port: Int, sessionCount: Int) {
+        TransferEngine.startSender(ip, port, sessionCount)
+    }
+
+    override fun pushFile(fileUriOrPath: String): Flow<TransferResult> = callbackFlow {
+        // Transform asynchronous JNI callbacks into a cold Kotlin Flow.
         TransferEngine.setCallback { fileName, stateCode, progress, msg ->
             when (stateCode) {
-                0 -> {
-                    // STARTED: File transfer initiated
+                0 -> { // STARTED
                     updateProgress(
                         TransferProgress(
                             isTransferring = true,
@@ -43,12 +99,10 @@ class DefaultTransferRepository @Inject constructor() : TransferRepository {
                     )
                 }
 
-                1 -> {
-                    // PROGRESS: File transfer in progress
+                1 -> { // PROGRESS
                     val result = TransferResult.Progress(fileName, progress)
-                    trySend(result) // Emit the stream downstream for the UseCase to consume
+                    trySend(result) // Emit the chunk progress to upstream consumers (UseCases)
 
-                    // Update the global state (useful for Notification / UI updates)
                     updateProgress(
                         TransferProgress(
                             isTransferring = true,
@@ -58,33 +112,31 @@ class DefaultTransferRepository @Inject constructor() : TransferRepository {
                     )
                 }
 
-                2 -> {
-                    // COMPLETED: Single file transfer successfully finished
+                2 -> { // COMPLETED
                     trySend(TransferResult.Completed(fileName))
 
-                    // Update the global state
                     updateProgress(
                         TransferProgress(
                             isTransferring = false,
                             isCompleted = true
                         )
                     )
-                    close() // Close the flow stream for this specific file successfully
+                    close() // Gracefully terminate the Flow for this specific file
                 }
 
-                -1 -> {
+                -1 -> { // ERROR
                     updateProgress(TransferProgress(isTransferring = false, error = msg))
                     close(DataException.TransferEngineException(message = "Engine Error: $msg"))
                 }
             }
         }
 
-        // Start the engine to initiate the actual file transfer.
-        TransferEngine.sendFile(absolutePath)
+        // Instruct the Native C++ engine to enqueue and transmit the file
+        TransferEngine.pushFile(fileUriOrPath)
 
-        // Ensure resources are cleaned up when the Flow is closed (canceled, completed, or errored).
+        // When the Flow is cancelled or closed, clear the JNI callback reference
+        // so the C++ engine does not hold onto a dead Kotlin object.
         awaitClose {
-            // Nullify the callback to prevent memory leaks from the C++ layer pointing to dead Kotlin objects
             TransferEngine.setCallback(null)
         }
     }
