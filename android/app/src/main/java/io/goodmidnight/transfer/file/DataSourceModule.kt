@@ -1,4 +1,4 @@
-package io.goodmidnight.transfer.datastore
+package io.goodmidnight.transfer.file
 
 import dagger.Binds
 import dagger.Module
@@ -6,7 +6,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import io.goodmidnight.transfer.data.datasource.AndroidFileDataSource
 import io.goodmidnight.transfer.data.datasource.SettingsDataSource
-import io.goodmidnight.transfer.file.DefaultAndroidFileDataSource
+import io.goodmidnight.transfer.datastore.DefaultSettingsDataSource
 import javax.inject.Singleton
 
 @Module
@@ -18,7 +18,7 @@ interface DataSourceModule {
      */
     @Binds
     @Singleton
-    fun bindSettingsDataSource(
-        defaultSettingsDataSource: DefaultSettingsDataSource,
-    ): SettingsDataSource
+    fun bindAndroidFileDataSource(
+        fileDataSource: DefaultAndroidFileDataSource,
+    ): AndroidFileDataSource
 }
