@@ -1,6 +1,5 @@
-package io.goodmidnight.transfer.ui.feature.settings.main.navigation
+package io.goodmidnight.transfer.ui.feature.settings.navigation
 
-//import androidx.compose.ui.Modifier
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
