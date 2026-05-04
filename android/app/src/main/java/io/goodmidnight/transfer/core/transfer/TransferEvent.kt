@@ -6,12 +6,12 @@ sealed interface TransferEvent {
      *
      * @param ip The IP address of the target device (or hotspot gateway).
      * @param port The port number for socket communication.
-     * @param filePaths A list of absolute file paths to be transferred.
+     * @param fileUris A list of File URIs (SAF) or absolute paths to be transferred.
      */
     data class StartTransfer(
         val ip: String,
         val port: Int,
-        val filePaths: List<String>
+        val fileUris: List<String>
     ) : TransferEvent
 
     /**

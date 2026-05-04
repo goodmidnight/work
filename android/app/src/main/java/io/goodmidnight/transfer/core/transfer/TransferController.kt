@@ -8,8 +8,8 @@ import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.goodmidnight.transfer.core.base.BaseController
 import io.goodmidnight.transfer.domain.model.TransferResult
-import io.goodmidnight.transfer.domain.usecase.CancelTransferUseCase
-import io.goodmidnight.transfer.domain.usecase.SendMultipleFilesUseCase
+import io.goodmidnight.transfer.domain.usecase.transfer.CancelTransferUseCase
+import io.goodmidnight.transfer.domain.usecase.transfer.SendFileUseCase // [수정됨] Import 변경
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -19,7 +19,7 @@ import javax.inject.Singleton
 @Singleton
 class TransferController @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    private val sendMultipleFilesUseCase: SendMultipleFilesUseCase,
+    private val sendFileUseCase: SendFileUseCase,
     private val cancelTransferUseCase: CancelTransferUseCase,
 ) : BaseController<TransferState, TransferEvent, TransferEffect, Exception>(
     "TransferController", TransferState()
@@ -39,7 +39,7 @@ class TransferController @Inject constructor(
         updateState {
             copy(
                 status = TransferState.TransferStatus.CONNECTING,
-                totalFiles = event.filePaths.size,
+                totalFiles = event.fileUris.size,
                 currentFileIndex = 0,
                 progress = 0
             )
@@ -59,7 +59,7 @@ class TransferController @Inject constructor(
 
         transferJob = controllerScope.launch {
             runCatching {
-                sendMultipleFilesUseCase(event.ip, event.port, event.filePaths)
+                sendFileUseCase(event.ip, event.port, event.fileUris)
                     .collect { result ->
                         when (result) {
                             is TransferResult.Progress -> {
