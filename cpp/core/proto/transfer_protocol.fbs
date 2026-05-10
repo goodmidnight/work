@@ -15,12 +15,11 @@ table Handshake {
     file_id: string;
     file_name: string;
     total_size: uint64;
-    start_offset: uint64; // 이 파이프가 전송을 시작할 위치
-    transmit_size: uint64; // 이 파이프가 전송할 총 크기
-    session_id: uint32;   // 세션 번호 (0, 1, 2...)
+    start_offset: uint64;  // The starting offset for this pipe to transmit
+    transmit_size: uint64; // The total size to be transmitted by this pipe
+    session_id: uint32;    // Session ID (0, 1, 2...)
     checksum: uint32;
 }
-
 
 table FileRequest {
     file_id: string;
@@ -36,4 +35,4 @@ table Message {
     payload: [ubyte];
 }
 
-root_type Message;
+root_type Handshake;
