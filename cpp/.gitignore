@@ -1,0 +1,36 @@
+# CMake
+cmake-build-*
+CMakeLists.txt.user
+compile_commands.json
+
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dll
+*.exe
+*.out
+
+# IDE settings
+.idea/
+*.suo
+*.user
+*.sln.docstates
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# Android
+.cxx/
+build/
+*.apk
+*.aab
+
+# macOS
+.DS_Store
+
+# Log files
+*.log
