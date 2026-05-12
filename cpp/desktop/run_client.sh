@@ -1,5 +1,19 @@
 #!/bin/bash
 
+# Check if a file path is provided as an argument.
+if [ -z "$1" ]; then
+    echo "Usage: $0 <path_to_file>"
+    exit 1
+fi
+
+FILE_TO_SEND="$1"
+
+# Check if the file exists.
+if [ ! -f "$FILE_TO_SEND" ]; then
+    echo "Error: File not found at $FILE_TO_SEND"
+    exit 1
+fi
+
 # Resolve the absolute path of the directory containing this script (cpp/desktop)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -14,8 +28,10 @@ if [ ! -f "$EXEC_PATH" ]; then
 fi
 
 echo "========================================"
-echo "Starting Spoke (Client)"
+echo "Starting Sender"
 echo "Target: 127.0.0.1:8080"
+echo "File: $FILE_TO_SEND"
 echo "========================================"
 
-"$EXEC_PATH" client 127.0.0.1 8080
+# Execute the program in 'send' mode with the new arguments.
+"$EXEC_PATH" send --file "$FILE_TO_SEND" --ip 127.0.0.1 --port 8080

@@ -1,89 +1,99 @@
 #include <iostream>
 #include <string>
-#include <fcntl.h>
-#include <sys/stat.h>
-
-#ifdef _WIN32
-#else
-#include <unistd.h>
-#define OPEN_FUNC open
-#define OPEN_FLAGS (O_CREAT | O_RDWR | O_TRUNC)
-#define OPEN_PERMS 0644
-#endif
-
+#include <vector>
+#include <future>
 #include "TransferEngine.hpp"
+#include "Logger.hpp"
 
-namespace transfer::core {
-    enum class TransferState;
+struct Args {
+    std::string mode;
+    std::string file_path;
+    std::string ip;
+    uint16_t port = 0;
+    std::string save_dir = ".";
+};
+
+void printUsage(const char* prog_name) {
+    std::cerr << "Usage:\n"
+              << "  " << prog_name << " send --file <path> --ip <ip> --port <port>\n"
+              << "  " << prog_name << " receive --port <port> [--save-dir <path>]\n";
 }
 
-using namespace transfer::core;
-
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage:\n"
-                << "  " << argv[0] << " server <port>\n"
-                << "  " << argv[0] << " client <ip> <port>\n";
+    if (argc < 3) {
+        printUsage(argv[0]);
         return 1;
     }
 
-    const std::string mode = argv[1];
-    const TransferEngine engine;
+    Args args;
+    args.mode = argv[1];
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--file" && i + 1 < argc) {
+            args.file_path = argv[++i];
+        } else if (arg == "--ip" && i + 1 < argc) {
+            args.ip = argv[++i];
+        } else if (arg == "--port" && i + 1 < argc) {
+            args.port = static_cast<uint16_t>(std::stoi(argv[++i]));
+        } else if (arg == "--save-dir" && i + 1 < argc) { // New: Parse save-dir
+            args.save_dir = argv[++i];
+        }
+    }
+
+    transfer::core::TransferEngine engine;
+    std::promise<bool> transfer_promise;
 
     engine.set_transfer_callback(
-        [](const std::string &name, TransferState state, int progress, const std::string &msg) {
-            std::cout << "\n[Event] File: " << name
-                    << " | State: " << static_cast<int>(state)
-                    << " | Progress: " << progress << "%"
-                    << " | Msg: " << msg << "\n> ";
-            std::cout.flush();
+        [&](const std::string &name, transfer::core::TransferState state, int progress, const std::string &msg) {
+            if (state == transfer::core::TransferState::PROGRESS) {
+                std::cout << "\r[Progress] " << progress << "%" << std::flush;
+            } else {
+                std::cout << "\n[Event] File: " << name
+                          << " | State: " << static_cast<int>(state)
+                          << " | Msg: " << msg << std::endl;
+            }
+
+            if (state == transfer::core::TransferState::COMPLETED) {
+                transfer_promise.set_value(true);
+            } else if (state == transfer::core::TransferState::ERROR) {
+                transfer_promise.set_value(false);
+            }
         });
 
-    engine.set_fd_request_callback([](const std::string &filename) -> int {
-        int fd = OPEN_FUNC(filename.c_str(), OPEN_FLAGS, OPEN_PERMS);
-        if (fd < 0) {
-            std::cerr << "\n[Error] Failed to create file descriptor for: " << filename << "\n> ";
-        }
-        return fd;
-    });
-
-    try {
-        if (mode == "server" && argc == 3) {
-            uint16_t port = static_cast<uint16_t>(std::stoi(argv[2]));
-            if (!engine.startReceiver(port)) {
-                std::cerr << "Failed to start receiver on port " << port << "\n";
-                return 1;
-            }
-            std::cout << "Listening on port " << port << "...\n";
-        } else if (mode == "client" && argc == 4) {
-            std::string ip = argv[2];
-            uint16_t port = static_cast<uint16_t>(std::stoi(argv[3]));
-
-            engine.startSender(ip, port, 4);
-            std::cout << "Connecting to " << ip << ":" << port << "...\n";
-        } else {
-            std::cerr << "Invalid arguments.\n";
-            engine.stop();
+    if (args.mode == "send") {
+        if (args.file_path.empty() || args.ip.empty() || args.port == 0) {
+            printUsage(argv[0]);
             return 1;
         }
-    } catch (const std::exception &e) {
-        std::cerr << "Argument parsing error: " << e.what() << "\n";
-        engine.stop();
+        LOGI("Starting sender...");
+        engine.startSender(args.ip, args.port, args.file_path);
+
+    } else if (args.mode == "receive") {
+        if (args.port == 0) {
+            printUsage(argv[0]);
+            return 1;
+        }
+        LOGI("Starting receiver...");
+        // Use parsed save_dir
+        if (!engine.startReceiver(args.port, args.save_dir)) {
+            LOGE("Failed to start receiver on port %d", args.port);
+            return 1;
+        }
+        LOGI("Listening on port %d, saving to '%s'...", args.port, args.save_dir.c_str());
+
+    } else {
+        printUsage(argv[0]);
         return 1;
     }
 
-    std::cout << "Enter file path to send (or type 'exit' to quit):\n> ";
-    std::string input;
-
-    while (std::getline(std::cin, input)) {
-        if (input == "exit" || input == "quit") {
-            break;
-        }
-        if (!input.empty()) {
-            engine.pushFile(input);
-        }
-    }
+    // Wait for the transfer to complete or fail.
+    auto transfer_future = transfer_promise.get_future();
+    LOGI("Waiting for transfer to complete...");
+    bool success = transfer_future.get();
 
     engine.stop();
-    return 0;
+    LOGI("Engine stopped.");
+
+    return success ? 0 : 1;
 }

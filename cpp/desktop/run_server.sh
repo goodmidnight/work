@@ -13,8 +13,33 @@ if [ ! -f "$EXEC_PATH" ]; then
     exit 1
 fi
 
+# Default port and save directory
+PORT=8080
+SAVE_DIR="." # Default to current directory
+
+# Parse command line arguments for port and save directory
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --port)
+            PORT="$2"
+            shift
+            ;;
+        --save-dir)
+            SAVE_DIR="$2"
+            shift
+            ;;
+        *)
+            echo "Unknown parameter passed: $1"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
 echo "========================================"
-echo "Starting Hub (Server) on port: 8080"
+echo "Starting Receiver on port: $PORT"
+echo "Saving received files to: $SAVE_DIR"
 echo "========================================"
 
-"$EXEC_PATH" server 8080
+# Execute the program in 'receive' mode with the new argument style.
+"$EXEC_PATH" receive --port "$PORT" --save-dir "$SAVE_DIR"
