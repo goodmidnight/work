@@ -11,11 +11,12 @@ struct Args {
     std::string ip;
     uint16_t port = 0;
     std::string save_dir = ".";
+    int sessions = 4; // Default to 4 sessions
 };
 
 void printUsage(const char* prog_name) {
     std::cerr << "Usage:\n"
-              << "  " << prog_name << " send --file <path> --ip <ip> --port <port>\n"
+              << "  " << prog_name << " send --file <path> --ip <ip> --port <port> [--sessions <count>]\n"
               << "  " << prog_name << " receive --port <port> [--save-dir <path>]\n";
 }
 
@@ -36,8 +37,11 @@ int main(int argc, char *argv[]) {
             args.ip = argv[++i];
         } else if (arg == "--port" && i + 1 < argc) {
             args.port = static_cast<uint16_t>(std::stoi(argv[++i]));
-        } else if (arg == "--save-dir" && i + 1 < argc) { // New: Parse save-dir
+        } else if (arg == "--save-dir" && i + 1 < argc) {
             args.save_dir = argv[++i];
+        } else if (arg == "--sessions" && i + 1 < argc) { // Parse sessions argument
+            args.sessions = std::stoi(argv[++i]);
+            if (args.sessions <= 0) args.sessions = 1;
         }
     }
 
@@ -66,8 +70,8 @@ int main(int argc, char *argv[]) {
             printUsage(argv[0]);
             return 1;
         }
-        LOGI("Starting sender...");
-        engine.startSender(args.ip, args.port, args.file_path);
+        LOGI("Starting sender with %d sessions...", args.sessions);
+        engine.startSender(args.ip, args.port, args.file_path, args.sessions);
 
     } else if (args.mode == "receive") {
         if (args.port == 0) {
@@ -75,7 +79,6 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         LOGI("Starting receiver...");
-        // Use parsed save_dir
         if (!engine.startReceiver(args.port, args.save_dir)) {
             LOGE("Failed to start receiver on port %d", args.port);
             return 1;
