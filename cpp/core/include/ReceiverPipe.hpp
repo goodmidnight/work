@@ -1,81 +1,65 @@
 #pragma once
 
-#include <asio.hpp>
 #include <string>
-#include <memory>
 #include <vector>
+#include <cstdint>
+#include <functional>
 
 namespace transfer::core {
 
-    class SessionManager;
-    class Session;
+    // FdRequestCallback을 다시 정의합니다.
+    using FdRequestCallback = std::function<int(const std::string &)>;
 
     /**
      * @class ReceiverPipe
-     * @brief Manages the high-speed inbound data stream for a single TCP connection (Data Plane).
-     *        It handles Handshake reception, Memory-Mapped file I/O (mmap),
-     *        resume metadata tracking, and conditionally applies E2E decryption.
+     * @brief A data plane component responsible for writing chunks to a destination file.
+     *        It uses mmap for efficient file access. It has no knowledge of the network layer.
      */
-    class ReceiverPipe : public std::enable_shared_from_this<ReceiverPipe> {
+    class ReceiverPipe {
     public:
-        ReceiverPipe(std::shared_ptr<asio::ip::tcp::socket> socket,
-                     std::shared_ptr<SessionManager> manager,
-                     std::shared_ptr<Session> parent_session);
+        /**
+         * @brief Constructs a ReceiverPipe. The file is not opened until open() is called.
+         * @param save_dir The directory where the received file will be stored.
+         * @param fd_callback A callback to request a file descriptor from the host platform.
+         */
+        ReceiverPipe(const std::string& save_dir, FdRequestCallback fd_callback);
         ~ReceiverPipe();
 
         /**
-         * @brief Initiates the asynchronous read loop, starting with the 4-byte size header.
+         * @brief Creates/opens the destination file and allocates space for it.
+         * @param file_name The name of the file to be created.
+         * @param total_size The total size of the file to be received.
+         * @return True on success, false on failure.
          */
-        void start_receive_loop();
+        bool open(const std::string& file_name, uint64_t total_size); // Added file_name
+
+        /**
+         * @brief Checks if the file is open and ready for writing.
+         * @return True if the pipe is ready, false otherwise.
+         */
+        bool isOpen() const;
+
+        /**
+         * @brief Writes a chunk of data to the file at a specific offset.
+         * @param offset The position in the file to write to.
+         * @param data The data chunk to write.
+         * @return True on success, false on failure.
+         */
+        bool writeChunk(uint64_t offset, const std::vector<uint8_t>& data);
+
+        /**
+         * @brief Closes the file and releases resources.
+         */
+        void close();
 
     private:
-        // --- Protocol Handshake ---
-        void receive_header();
-        void receive_handshake_payload(uint32_t payload_size);
+        std::string save_dir_; // Renamed from save_path_
+        FdRequestCallback fd_callback_;
 
-        // --- Data Reception Pipeline ---
-        void receive_raw_data();
-        void receive_chunk(uint32_t chunk_size);
-
-        // --- Utility & Cleanup ---
-        void send_handshake_ack(uint64_t saved_progress);
-        void cleanup_resources();
-
-        // Helper to serialize the 64-bit progress offset for the ACK packet
-        static void serialize_uint64(uint64_t val, uint8_t* buf);
-
-        std::shared_ptr<asio::ip::tcp::socket> socket_;
-        std::shared_ptr<SessionManager> manager_;
-
-        // Keep a reference to the parent session to trigger graceful socket closure on errors
-        std::shared_ptr<Session> parent_session_;
-
-        uint32_t session_id_ = 0;
-        uint32_t inbound_header_ = 0;
-        std::string recv_file_name_;
-
-        // --- Receive-side File I/O variables ---
-        int recv_fd_ = -1;
-        uint8_t *recv_mmap_ptr_ = nullptr;
-        uint64_t recv_total_file_size_ = 0;
-
-        // Tracking the exact byte offsets this pipe is responsible for
-        uint64_t recv_offset_ = 0;
-        uint64_t recv_limit_ = 0;
-
-        // --- Resume Metadata variables ---
-        // A tiny parallel file (.meta) used to persistently track how many bytes each session has downloaded.
-        // If the app crashes, we read this file to resume exactly where we left off.
-        int meta_fd_ = -1;
-        uint64_t *meta_mmap_ptr_ = nullptr;
-        const size_t META_FILE_SIZE = 64; // Supports up to 8 parallel sessions (8 bytes per uint64_t)
-
-        // Optimized chunk size (2MB) balances memory consumption and network MTU efficiency
-        const uint32_t CHUNK_SIZE = 1024 * 1024 * 2;
-
-        // Memory-safe buffers for asynchronous I/O
-        std::vector<uint8_t> recv_buffer_;   // For dynamic Flatbuffers payload
-        std::vector<uint8_t> crypto_buffer_; // Staging area for decrypting incoming AES-GCM data
+        int fd_ = -1;
+        void* mmap_ptr_ = nullptr;
+        uint64_t total_size_ = 0;
+        std::string full_file_path_; // To store the full path once known
     };
 
 } // namespace transfer::core
