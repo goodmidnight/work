@@ -1,21 +1,24 @@
-// Defines the protocol for the single-pipeline file transfer system.
+// Defines the protocol for the hybrid multi-session file transfer system.
 namespace transfer.protocol;
 
 /// Enum representing the type of message in the payload.
 enum MessageType : byte {
-    Handshake,        // Sent by the sender to initiate a transfer.
-    HandshakeAck,     // Sent by the receiver to acknowledge the handshake.
-    DataChunk,        // A chunk of the file being transferred.
-    TransferComplete, // Sent by the sender when the file is fully transferred.
-    Error             // Sent by either peer if an error occurs.
+    Handshake,         // Sent by the sender to initiate a transfer on the control channel.
+    HandshakeAck,      // Sent by the receiver to acknowledge the handshake.
+    DataChunk,         // A chunk of the file being transferred. (If not using zero-copy directly)
+    TransferComplete,  // Sent by the sender when the file is fully transferred.
+    Error,             // Sent by either peer if an error occurs.
+    DataChannelHello   // Sent by the sender immediately upon connecting a data channel.
 }
 
-/// The initial message sent by the sender to describe the file.
+/// The initial message sent by the sender on the control channel to describe the file.
 table Handshake {
     /// The name of the file being sent.
     file_name: string;
     /// The total size of the file in bytes.
     total_size: uint64;
+    /// The number of data channels the sender will create.
+    session_count: int32;
 }
 
 /// The receiver's response to the Handshake.
@@ -24,7 +27,17 @@ table HandshakeAck {
     resume_offset: uint64;
 }
 
-/// A chunk of the file's binary data.
+/// The first message sent on a data channel to identify its purpose.
+table DataChannelHello {
+    /// An identifier for the data session (0 to session_count - 1).
+    session_id: int32;
+    /// The byte offset this channel starts reading/writing.
+    offset: uint64;
+    /// The total length of data this channel will transmit.
+    length: uint64;
+}
+
+/// A chunk of the file's binary data (fallback for non-zerocopy transfer).
 table DataChunk {
     /// The byte offset of this chunk within the original file.
     offset: uint64;
@@ -52,7 +65,8 @@ union MessagePayload {
     HandshakeAck,
     DataChunk,
     TransferComplete,
-    Error
+    Error,
+    DataChannelHello
 }
 
 /// The root message container.
