@@ -75,4 +75,8 @@ std::vector<uint8_t> SenderPipe::readChunk(uint64_t offset, uint32_t size) {
     return std::vector<uint8_t>(start_ptr, start_ptr + size);
 }
 
+const uint8_t* SenderPipe::getMmapPointer() const {
+    return static_cast<const uint8_t*>(mmap_ptr_);
+}
+
 } // namespace transfer::core

@@ -5,18 +5,12 @@
 namespace transfer::core {
     PeerNode::PeerNode() : io_context_(),
                            work_guard_(asio::make_work_guard(io_context_)),
-                           acceptor_(io_context_),
-                           socket_(io_context_) { // socket_ 초기화
+                           acceptor_(io_context_) {
     }
 
     PeerNode::~PeerNode() {
         stop();
     }
-
-    // SessionManager 관련 콜백 설정은 모두 제거됩니다.
-    // void PeerNode::set_transfer_callback(TransferCallback callback) { ... }
-    // void PeerNode::set_fd_request_callback(FdRequestCallback callback) { ... }
-    // void PeerNode::set_encryption_key(const std::string &key) { ... }
 
     void PeerNode::start() {
         if (worker_thread_.joinable()) return;
@@ -88,38 +82,36 @@ namespace transfer::core {
                     LOGE("[PeerNode] Accept failed: %s", ec.message().c_str());
                 }
             }
-            // 단일 연결만 처리하므로 재귀 호출을 제거합니다.
-            // if (acceptor_.is_open()) {
-            //     do_accept();
-            // }
+
+            // 다중 연결(Control + Data Channels)을 처리하기 위해 재귀 호출 복원
+            if (acceptor_.is_open()) {
+                do_accept();
+            }
         });
     }
 
-    void PeerNode::startSender(const std::string &ip, uint16_t port) {
+    void PeerNode::connect(const std::string &ip, uint16_t port, ConnectionHandler handler) {
         LOGI("[PeerNode] Initiating connection to %s:%d", ip.c_str(), port);
         auto endpoint = asio::ip::tcp::endpoint(asio::ip::make_address(ip), port);
-        do_connect(endpoint);
-    }
 
-    void PeerNode::do_connect(const asio::ip::tcp::endpoint& endpoint) {
-        socket_.async_connect(endpoint, [this](std::error_code ec) {
+        auto socket = std::make_shared<asio::ip::tcp::socket>(io_context_);
+
+        socket->async_connect(endpoint, [socket, handler](std::error_code ec) {
             if (!ec) {
                 try {
-                    socket_.set_option(asio::ip::tcp::no_delay(true));
-                    socket_.set_option(asio::socket_base::send_buffer_size(TCP_BUFFER_SIZE));
+                    socket->set_option(asio::ip::tcp::no_delay(true));
+                    socket->set_option(asio::socket_base::send_buffer_size(TCP_BUFFER_SIZE));
 
-                    LOGI("[PeerNode] Pipe connected. Delegating raw socket.");
+                    LOGI("[PeerNode] Connected successfully. Delegating socket.");
 
-                    if (connection_handler_) {
-                        // socket_을 std::move를 사용하여 소유권을 이전합니다.
-                        connection_handler_(std::make_shared<asio::ip::tcp::socket>(std::move(socket_)));
+                    if (handler) {
+                        handler(socket);
                     }
                 } catch (const std::exception &e) {
                     LOGE("[PeerNode] Socket tuning error: %s", e.what());
                 }
             } else {
                 LOGE("[PeerNode] Connection failed: %s", ec.message().c_str());
-                // 실패 콜백은 상위 레이어에서 처리하도록 합니다.
             }
         });
     }

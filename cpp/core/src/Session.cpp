@@ -7,7 +7,7 @@
 #include <asio/post.hpp>
 #include <asio/read.hpp>
 #include <asio/write.hpp>
-#include <algorithm> // for std::min
+#include <algorithm>
 
 // Platform-specific includes for byte order conversion
 #ifndef _WIN32
@@ -19,25 +19,33 @@
 namespace transfer::core {
     // A 4-byte header indicating the size of the following FlatBuffers payload.
     constexpr size_t HEADER_SIZE = 4;
-    // The size of data chunks to read from the file and send. 2MB is a good balance.
-    constexpr uint32_t CHUNK_SIZE = 2 * 1024 * 1024;
+    // The size of data chunks to read/write for pure data streams.
+    // Larger chunk size helps utilize the OS zero-copy effectively.
+    constexpr uint32_t CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
 
-    Session::Session(asio::io_context &io_context, std::shared_ptr<asio::ip::tcp::socket> socket)
+    Session::Session(asio::io_context &io_context,
+                     std::shared_ptr<asio::ip::tcp::socket> control_socket,
+                     ConnectFn connect_fn)
         : io_context_(io_context),
-          socket_(std::move(socket)),
+          control_socket_(std::move(control_socket)),
+          connect_fn_(std::move(connect_fn)),
           read_header_buffer_(HEADER_SIZE) {
         LOGI("Session object created.");
     }
 
     Session::~Session() {
         LOGI("Session object destroyed.");
-        close_socket();
+        close_all_sockets();
     }
 
     // --- Public Control Methods ---
 
-    void Session::startSend(const std::string &file_path) {
+    void Session::startSend(const std::string &file_path, const std::string& ip, uint16_t port, int session_count) {
+        is_sender_ = true;
         file_path_ = file_path;
+        target_ip_ = ip;
+        target_port_ = port;
+        session_count_ = session_count;
 
         // Initialize the data plane component for reading the file.
         sender_pipe_ = std::make_unique<SenderPipe>(file_path_, fd_request_callback_);
@@ -51,12 +59,14 @@ namespace transfer::core {
             status_callback_(TransferState::STARTED, 0, "Sending started");
         }
 
-        // Begin the transfer protocol by sending the initial handshake.
+        // Begin the transfer protocol by sending the initial handshake on the Control Channel.
         send_handshake();
     }
 
     void Session::startReceive(const std::string &save_path) {
+        is_sender_ = false;
         save_path_ = save_path;
+
         // Initialize the data plane component for writing the file.
         receiver_pipe_ = std::make_unique<ReceiverPipe>(save_path_, fd_request_callback_);
 
@@ -64,143 +74,134 @@ namespace transfer::core {
             status_callback_(TransferState::STARTED, 0, "Ready to receive");
         }
 
-        // Start the asynchronous read loop to wait for incoming messages.
-        do_read_header();
+        // Start the asynchronous read loop on the Control Channel to wait for incoming Handshake.
+        do_read_control_header();
     }
 
     void Session::stop() {
         LOGI("Stop requested for session.");
-        // Post the close operation to the io_context to ensure thread safety.
         asio::post(io_context_, [self = shared_from_this()]() {
-            self->close_socket();
+            self->close_all_sockets();
         });
+    }
+
+    void Session::addDataSocket(std::shared_ptr<asio::ip::tcp::socket> socket) {
+        std::lock_guard<std::mutex> lock(sockets_mutex_);
+        data_sockets_.push_back(socket);
+        LOGI("Data socket added. Total data sockets: %zu", data_sockets_.size());
+
+        // Immediately start reading the DataChannelHello from this new socket
+        do_receive_data_channel_hello(socket);
     }
 
     // --- Internal Utility Methods ---
 
-    void Session::close_socket() {
-        if (socket_ && socket_->is_open()) {
-            asio::error_code ec;
-            // Gracefully shut down the connection.
-            socket_->shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-            socket_->close(ec);
-            LOGI("Socket closed.");
+    void Session::close_all_sockets() {
+        auto close_sock = [](std::shared_ptr<asio::ip::tcp::socket>& s) {
+            if (s && s->is_open()) {
+                asio::error_code ec;
+                s->shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+                s->close(ec);
+            }
+        };
+
+        close_sock(control_socket_);
+        std::lock_guard<std::mutex> lock(sockets_mutex_);
+        for (auto& sock : data_sockets_) {
+            close_sock(sock);
         }
+        data_sockets_.clear();
     }
 
     void Session::report_error(const std::string &message) {
         LOGE("Session Error: %s", message.c_str());
         if (status_callback_) {
-            // Notify the upper layer (SessionManager) about the error.
             status_callback_(TransferState::ERROR, 0, message);
         }
-        // An error is fatal. Close the connection.
-        close_socket();
+        close_all_sockets();
     }
 
-    // --- Asynchronous I/O Read Loop ---
+    // --- Control Channel Asynchronous I/O ---
 
-    void Session::do_read_header() {
-        // Use shared_from_this to keep the Session object alive during async operations.
+    void Session::do_read_control_header() {
         auto self = shared_from_this();
-        asio::async_read(*socket_, asio::buffer(read_header_buffer_),
+        asio::async_read(*control_socket_, asio::buffer(read_header_buffer_),
                          [this, self](const asio::error_code &ec, size_t) {
                              if (!ec) {
-                                 // The header contains the size of the payload in network byte order.
                                  uint32_t payload_size;
                                  std::memcpy(&payload_size, read_header_buffer_.data(), HEADER_SIZE);
                                  payload_size = ntohl(payload_size);
 
-                                 // Sanity check to prevent allocating huge amounts of memory.
                                  if (payload_size > (CHUNK_SIZE + 1024)) {
-                                     report_error("Payload size too large: " + std::to_string(payload_size));
+                                     report_error("Control Payload size too large: " + std::to_string(payload_size));
                                      return;
                                  }
-                                 // Now that we have the size, read the actual payload.
-                                 do_read_payload(payload_size);
+                                 do_read_control_payload(payload_size);
                              } else {
                                  if (ec != asio::error::eof && ec != asio::error::operation_aborted) {
-                                     report_error("Failed to read header: " + ec.message());
-                                 } else {
-                                     LOGI("Connection closed by peer (EOF).");
+                                     report_error("Failed to read control header: " + ec.message());
                                  }
                              }
                          });
     }
 
-    void Session::do_read_payload(uint32_t payload_size) {
+    void Session::do_read_control_payload(uint32_t payload_size) {
         read_payload_buffer_.resize(payload_size);
         auto self = shared_from_this();
-        asio::async_read(*socket_, asio::buffer(read_payload_buffer_),
+        asio::async_read(*control_socket_, asio::buffer(read_payload_buffer_),
                          [this, self](const asio::error_code &ec, size_t) {
                              if (!ec) {
-                                 // We have the complete message, now process it.
-                                 process_message();
+                                 process_control_message();
                              } else if (ec != asio::error::operation_aborted) {
-                                 report_error("Failed to read payload: " + ec.message());
+                                 report_error("Failed to read control payload: " + ec.message());
                              }
                          });
     }
 
-    void Session::process_message() {
-        // Verify that the received data is a valid FlatBuffers message.
+    void Session::process_control_message() {
         auto verifier = flatbuffers::Verifier(read_payload_buffer_.data(), read_payload_buffer_.size());
         if (!transfer::protocol::VerifyMessageBuffer(verifier)) {
-            report_error("Invalid FlatBuffers message received.");
+            report_error("Invalid FlatBuffers message received on Control Channel.");
             return;
         }
 
         auto msg = transfer::protocol::GetMessage(read_payload_buffer_.data());
 
-        // Delegate to the appropriate handler based on the message type.
         switch (msg->message_type()) {
-            case protocol::MessageType_Handshake: handle_handshake();
-                break;
-            case protocol::MessageType_HandshakeAck: handle_handshake_ack();
-                break;
-            case protocol::MessageType_DataChunk: handle_data_chunk();
-                break;
-            case protocol::MessageType_TransferComplete: handle_transfer_complete();
-                break;
-            case protocol::MessageType_Error: handle_error();
-                break;
-            default: report_error("Unknown message type received.");
-                break;
+            case protocol::MessageType_Handshake: handle_handshake(); break;
+            case protocol::MessageType_HandshakeAck: handle_handshake_ack(); break;
+            case protocol::MessageType_TransferComplete: handle_transfer_complete(); break;
+            case protocol::MessageType_Error: handle_error(); break;
+            default: report_error("Unknown/Invalid message type on Control Channel."); break;
         }
     }
 
-    // --- Message Handlers ---
+    // --- Control Channel Message Handlers ---
 
     void Session::handle_handshake() {
         auto msg = transfer::protocol::GetMessage(read_payload_buffer_.data());
         auto handshake = msg->payload_as_Handshake();
-        if (!handshake) {
-            report_error("Invalid Handshake payload.");
-            return;
-        }
+        if (!handshake) { report_error("Invalid Handshake."); return; }
 
-        // Extract file metadata from the handshake.
         file_path_ = handshake->file_name()->str();
         total_file_size_ = handshake->total_size();
-        bytes_transferred_ = 0;
+        session_count_ = handshake->session_count();
 
-        LOGI("Handshake received for file: %s, size: %llu", file_path_.c_str(), total_file_size_);
+        LOGI("Handshake Rx. File: %s, Size: %llu, Expected Sessions: %d", file_path_.c_str(), total_file_size_, session_count_);
 
-        // Prepare the receiver pipe to write the file.
         if (!receiver_pipe_ || !receiver_pipe_->open(file_path_, total_file_size_)) {
             report_error("Failed to open receiver pipe for file " + file_path_);
             return;
         }
 
-        // Acknowledge the handshake, indicating we are ready to receive from offset 0.
+        // Acknowledge the handshake
         flatbuffers::FlatBufferBuilder builder;
-        auto ack = protocol::CreateHandshakeAck(builder, 0);
+        auto ack = protocol::CreateHandshakeAck(builder, 0); // Resume offset can be added later
         auto message = protocol::CreateMessage(builder, protocol::MessageType_HandshakeAck,
                                                protocol::MessagePayload_HandshakeAck, ack.Union());
         builder.Finish(message);
 
-        // This is a simplified write. A more robust implementation would use a write queue.
-        auto buffer = std::make_shared<std::vector<uint8_t> >();
+        auto buffer = std::make_shared<std::vector<uint8_t>>();
         uint32_t size = builder.GetSize();
         buffer->resize(HEADER_SIZE + size);
         uint32_t net_size = htonl(size);
@@ -208,90 +209,47 @@ namespace transfer::core {
         std::memcpy(buffer->data() + HEADER_SIZE, builder.GetBufferPointer(), size);
 
         auto self = shared_from_this();
-        asio::async_write(*socket_, asio::buffer(*buffer), [this, self, buffer](const asio::error_code &ec, size_t) {
+        asio::async_write(*control_socket_, asio::buffer(*buffer), [this, self, buffer](const asio::error_code &ec, size_t) {
             if (!ec) {
-                LOGI("Handshake ACK sent.");
-                // Continue the read loop for the next message (e.g., DataChunk).
-                do_read_header();
+                LOGI("Handshake ACK sent. Waiting for Data Channels or Complete message.");
+                do_read_control_header();
             } else {
-                report_error("Failed to send Handshake ACK: " + ec.message());
+                report_error("Failed to send ACK: " + ec.message());
             }
         });
     }
 
     void Session::handle_handshake_ack() {
-        auto msg = transfer::protocol::GetMessage(read_payload_buffer_.data());
-        auto ack = msg->payload_as_HandshakeAck();
-        if (!ack) {
-            report_error("Invalid HandshakeAck payload.");
-            return;
-        }
+        LOGI("Handshake ACK Rx. Partitioning file and initiating Data Channels.");
+        partition_file_and_connect();
 
-        // The receiver may ask us to resume from a specific offset.
-        uint64_t resume_offset = ack->resume_offset();
-        LOGI("Handshake ACK received. Resume offset: %llu", resume_offset);
-        bytes_transferred_ = resume_offset;
-
-        // The handshake is complete. Start sending the actual file data.
-        send_data_chunks();
-    }
-
-    void Session::handle_data_chunk() {
-        auto msg = transfer::protocol::GetMessage(read_payload_buffer_.data());
-        auto data_chunk = msg->payload_as_DataChunk();
-        if (!data_chunk) {
-            report_error("Invalid DataChunk payload.");
-            return;
-        }
-
-        uint64_t offset = data_chunk->offset();
-        const auto *payload_vec = data_chunk->payload();
-        std::vector<uint8_t> data(payload_vec->begin(), payload_vec->end());
-
-        // Write the received data to the file via the receiver pipe.
-        if (!receiver_pipe_ || !receiver_pipe_->writeChunk(offset, data)) {
-            report_error("Failed to write chunk to file.");
-            return;
-        }
-
-        // Update progress and notify the upper layer.
-        bytes_transferred_ += data.size();
-        int progress = (total_file_size_ > 0) ? static_cast<int>(bytes_transferred_ * 100 / total_file_size_) : 0;
-        if (status_callback_) {
-            status_callback_(TransferState::PROGRESS, progress, "Receiving...");
-        }
-
-        // Continue reading for the next chunk.
-        do_read_header();
+        // Keep listening on control channel for Error or TransferComplete
+        do_read_control_header();
     }
 
     void Session::handle_transfer_complete() {
-        LOGI("TransferComplete received.");
+        LOGI("TransferComplete Rx.");
         if (status_callback_) {
             status_callback_(TransferState::COMPLETED, 100, "Transfer complete.");
         }
-        // The transfer is finished, so we can close the connection.
-        close_socket();
+        close_all_sockets();
     }
 
     void Session::handle_error() {
-        auto msg = transfer::protocol::GetMessage(read_payload_buffer_.data());
-        auto error_msg = msg->payload_as_Error();
-        std::string err_str = error_msg && error_msg->message() ? error_msg->message()->str() : "Unknown error";
-        report_error("Received error from peer: " + err_str);
+        report_error("Received error from peer via Control Channel.");
     }
 
-    // --- Asynchronous I/O Write Logic ---
+    // --- Control Channel Senders ---
 
     void Session::send_handshake() {
         flatbuffers::FlatBufferBuilder builder;
         auto file_name = std::filesystem::path(file_path_).filename().string();
-        auto handshake = protocol::CreateHandshake(builder, builder.CreateString(file_name), total_file_size_);
+        auto handshake = protocol::CreateHandshake(builder, builder.CreateString(file_name), total_file_size_, session_count_);
         auto message = protocol::CreateMessage(builder, protocol::MessageType_Handshake,
                                                protocol::MessagePayload_Handshake, handshake.Union());
         builder.Finish(message);
 
-        auto buffer = std::make_shared<std::vector<uint8_t> >();
+        auto buffer = std::make_shared<std::vector<uint8_t>>();
         uint32_t size = builder.GetSize();
         buffer->resize(HEADER_SIZE + size);
         uint32_t net_size = htonl(size);
@@ -299,66 +257,14 @@ namespace transfer::core {
         std::memcpy(buffer->data() + HEADER_SIZE, builder.GetBufferPointer(), size);
 
         auto self = shared_from_this();
-        asio::async_write(*socket_, asio::buffer(*buffer), [this, self, buffer](const asio::error_code &ec, size_t) {
+        asio::async_write(*control_socket_, asio::buffer(*buffer), [this, self, buffer](const asio::error_code &ec, size_t) {
             if (!ec) {
-                LOGI("Handshake sent. Waiting for ACK.");
-                // Start reading for the HandshakeAck response.
-                do_read_header();
+                LOGI("Handshake sent.");
+                do_read_control_header();
             } else {
                 report_error("Failed to send handshake: " + ec.message());
             }
         });
-    }
-
-    void Session::send_data_chunks() {
-        // Exit condition for the recursive send loop.
-        if (bytes_transferred_ >= total_file_size_) {
-            send_transfer_complete();
-            return;
-        }
-
-        // Determine the size of the next chunk to send.
-        uint32_t size_to_read = std::min(CHUNK_SIZE, (uint32_t) (total_file_size_ - bytes_transferred_));
-        std::vector<uint8_t> chunk_data = sender_pipe_->readChunk(bytes_transferred_, size_to_read);
-
-        if (chunk_data.empty() && size_to_read > 0) {
-            report_error("Failed to read chunk from file.");
-            return;
-        }
-
-        // Build the DataChunk message.
-        flatbuffers::FlatBufferBuilder builder;
-        auto payload = builder.CreateVector(chunk_data.data(), chunk_data.size());
-        auto data_chunk = protocol::CreateDataChunk(builder, bytes_transferred_, payload);
-        auto message = protocol::CreateMessage(builder, protocol::MessageType_DataChunk,
-                                               protocol::MessagePayload_DataChunk, data_chunk.Union());
-        builder.Finish(message);
-
-        auto buffer = std::make_shared<std::vector<uint8_t> >();
-        uint32_t size = builder.GetSize();
-        buffer->resize(HEADER_SIZE + size);
-        uint32_t net_size = htonl(size);
-        std::memcpy(buffer->data(), &net_size, HEADER_SIZE);
-        std::memcpy(buffer->data() + HEADER_SIZE, builder.GetBufferPointer(), size);
-
-        auto self = shared_from_this();
-        asio::async_write(*socket_, asio::buffer(*buffer),
-                          [this, self, buffer, size_to_read](const asio::error_code &ec, size_t) {
-                              if (!ec) {
-                                  // Update progress after the chunk is successfully sent.
-                                  bytes_transferred_ += size_to_read;
-                                  int progress = (total_file_size_ > 0)
-                                                     ? static_cast<int>(bytes_transferred_ * 100 / total_file_size_)
-                                                     : 0;
-                                  if (status_callback_) {
-                                      status_callback_(TransferState::PROGRESS, progress, "Sending...");
-                                  }
-                                  // Recursively call to send the next chunk.
-                                  send_data_chunks();
-                              } else {
-                                  report_error("Failed to send data chunk: " + ec.message());
-                              }
-                          });
     }
 
     void Session::send_transfer_complete() {
@@ -368,7 +274,7 @@ namespace transfer::core {
                                                protocol::MessagePayload_TransferComplete, complete.Union());
         builder.Finish(message);
 
-        auto buffer = std::make_shared<std::vector<uint8_t> >();
+        auto buffer = std::make_shared<std::vector<uint8_t>>();
         uint32_t size = builder.GetSize();
         buffer->resize(HEADER_SIZE + size);
         uint32_t net_size = htonl(size);
@@ -376,23 +282,232 @@ namespace transfer::core {
         std::memcpy(buffer->data() + HEADER_SIZE, builder.GetBufferPointer(), size);
 
         auto self = shared_from_this();
-        asio::async_write(*socket_, asio::buffer(*buffer), [this, self, buffer](const asio::error_code &ec, size_t) {
+        asio::async_write(*control_socket_, asio::buffer(*buffer), [this, self, buffer](const asio::error_code &ec, size_t) {
             if (!ec) {
                 LOGI("TransferComplete sent.");
-                if (status_callback_) {
-                    status_callback_(TransferState::COMPLETED, 100, "Transfer complete.");
-                }
-                // The sender can close the connection after sending the final message.
-                // The receiver will close upon receiving it.
-                close_socket();
+                if (status_callback_) status_callback_(TransferState::COMPLETED, 100, "Transfer complete.");
+                close_all_sockets();
             } else {
                 report_error("Failed to send TransferComplete: " + ec.message());
             }
         });
     }
 
-    void Session::do_write(bool) {
-        // TODO: Implement a robust, thread-safe write queue to prevent concurrent writes.
-        // This is a placeholder for a future improvement.
+    // --- Data Channel Setup and Data Transfer ---
+
+    void Session::partition_file_and_connect() {
+        std::lock_guard<std::mutex> lock(partitions_mutex_);
+        if (session_count_ <= 0) session_count_ = 1;
+
+        uint64_t block_size = total_file_size_ / session_count_;
+        active_data_channels_ = session_count_;
+
+        for (int i = 0; i < session_count_; ++i) {
+            FilePartition p;
+            p.session_id = i;
+            p.offset = i * block_size;
+            p.length = (i == session_count_ - 1) ? (total_file_size_ - p.offset) : block_size;
+            p.bytes_transferred = 0;
+
+            partitions_[i] = p;
+
+            if (connect_fn_) {
+                LOGI("Connecting Data Channel %d...", i);
+                connect_fn_(target_ip_, target_port_, [this, p](std::shared_ptr<asio::ip::tcp::socket> socket) {
+                    if (socket) {
+                        std::lock_guard<std::mutex> sock_lock(sockets_mutex_);
+                        data_sockets_.push_back(socket);
+                        do_data_channel_handshake(socket, p);
+                    } else {
+                        report_error("Failed to connect Data Channel.");
+                    }
+                });
+            }
+        }
+    }
+
+    void Session::do_data_channel_handshake(std::shared_ptr<asio::ip::tcp::socket> socket, const FilePartition& partition) {
+        flatbuffers::FlatBufferBuilder builder;
+        auto hello = protocol::CreateDataChannelHello(builder, partition.session_id, partition.offset, partition.length);
+        auto message = protocol::CreateMessage(builder, protocol::MessageType_DataChannelHello,
+                                               protocol::MessagePayload_DataChannelHello, hello.Union());
+        builder.Finish(message);
+
+        auto buffer = std::make_shared<std::vector<uint8_t>>();
+        uint32_t size = builder.GetSize();
+        buffer->resize(HEADER_SIZE + size);
+        uint32_t net_size = htonl(size);
+        std::memcpy(buffer->data(), &net_size, HEADER_SIZE);
+        std::memcpy(buffer->data() + HEADER_SIZE, builder.GetBufferPointer(), size);
+
+        auto self = shared_from_this();
+        asio::async_write(*socket, asio::buffer(*buffer), [this, self, socket, partition, buffer](const asio::error_code &ec, size_t) {
+            if (!ec) {
+                LOGI("DataChannelHello sent for partition %d. Starting true Zero-Copy data transfer loop.", partition.session_id);
+                start_data_sender(socket, partition);
+            } else {
+                report_error("Failed to send DataChannelHello: " + ec.message());
+            }
+        });
+    }
+
+    void Session::do_receive_data_channel_hello(std::shared_ptr<asio::ip::tcp::socket> socket) {
+        auto header_buf = std::make_shared<std::vector<uint8_t>>(HEADER_SIZE);
+        auto self = shared_from_this();
+
+        asio::async_read(*socket, asio::buffer(*header_buf), [this, self, socket, header_buf](const asio::error_code &ec, size_t) {
+            if (!ec) {
+                uint32_t payload_size;
+                std::memcpy(&payload_size, header_buf->data(), HEADER_SIZE);
+                payload_size = ntohl(payload_size);
+
+                if (payload_size > 1024) {
+                    report_error("DataChannelHello size too large.");
+                    return;
+                }
+
+                auto payload_buf = std::make_shared<std::vector<uint8_t>>(payload_size);
+                asio::async_read(*socket, asio::buffer(*payload_buf), [this, self, socket, payload_buf](const asio::error_code &e, size_t) {
+                    if (!e) {
+                        auto verifier = flatbuffers::Verifier(payload_buf->data(), payload_buf->size());
+                        if (transfer::protocol::VerifyMessageBuffer(verifier)) {
+                            auto msg = transfer::protocol::GetMessage(payload_buf->data());
+                            if (msg->message_type() == protocol::MessageType_DataChannelHello) {
+                                auto hello = msg->payload_as_DataChannelHello();
+                                FilePartition p;
+                                p.session_id = hello->session_id();
+                                p.offset = hello->offset();
+                                p.length = hello->length();
+                                p.bytes_transferred = 0;
+
+                                {
+                                    std::lock_guard<std::mutex> lock(partitions_mutex_);
+                                    partitions_[p.session_id] = p;
+                                }
+                                LOGI("DataChannelHello Rx. Partition %d, offset %llu, len %llu. Starting true Zero-Copy receive loop.", p.session_id, p.offset, p.length);
+                                start_data_receiver(socket, p.session_id);
+                            }
+                        }
+                    }
+                });
+            } else {
+                report_error("Failed to read DataChannelHello header.");
+            }
+        });
+    }
+
+    void Session::start_data_sender(std::shared_ptr<asio::ip::tcp::socket> socket, const FilePartition& partition) {
+        uint64_t current_offset = partition.offset + partition.bytes_transferred;
+        uint64_t remaining = partition.length - partition.bytes_transferred;
+
+        if (remaining == 0) {
+            LOGI("Partition %d sending completed.", partition.session_id);
+            int active = --active_data_channels_;
+            if (active == 0) {
+                LOGI("All data channels completed. Sending TransferComplete.");
+                send_transfer_complete();
+            }
+            return;
+        }
+
+        uint32_t size_to_write = std::min(static_cast<uint64_t>(CHUNK_SIZE), remaining);
+
+        const uint8_t* mmap_ptr = sender_pipe_->getMmapPointer();
+        if (!mmap_ptr) {
+            report_error("File memory mapping is not available for zero-copy.");
+            return;
+        }
+
+        auto self = shared_from_this();
+
+        // TRUE ZERO-COPY in user-space:
+        // We pass the memory-mapped pointer directly to ASIO.
+        // ASIO will write directly from the kernel page cache (mmap) into the socket kernel buffer.
+        // No std::vector allocations, no memory copying in our application layer!
+        asio::async_write(*socket, asio::buffer(mmap_ptr + current_offset, size_to_write),
+            [this, self, socket, partition, size_to_write](const asio::error_code &ec, size_t) {
+            if (!ec) {
+                FilePartition updated_partition = partition;
+                updated_partition.bytes_transferred += size_to_write;
+
+                {
+                    std::lock_guard<std::mutex> lock(partitions_mutex_);
+                    partitions_[partition.session_id] = updated_partition;
+                }
+                update_progress();
+
+                // Recursively send the next chunk
+                start_data_sender(socket, updated_partition);
+            } else {
+                report_error("Data sender socket write failed: " + ec.message());
+            }
+        });
+    }
+
+    void Session::start_data_receiver(std::shared_ptr<asio::ip::tcp::socket> socket, int session_id) {
+        FilePartition p;
+        {
+            std::lock_guard<std::mutex> lock(partitions_mutex_);
+            p = partitions_[session_id];
+        }
+
+        uint64_t current_offset = p.offset + p.bytes_transferred;
+        uint64_t remaining = p.length - p.bytes_transferred;
+
+        if (remaining == 0) {
+            LOGI("Partition %d receive completed.", session_id);
+            return;
+        }
+
+        uint32_t size_to_read = std::min(static_cast<uint64_t>(CHUNK_SIZE), remaining);
+
+        uint8_t* mmap_ptr = receiver_pipe_->getMmapPointer();
+        if (!mmap_ptr) {
+            report_error("File memory mapping is not available for zero-copy.");
+            return;
+        }
+
+        auto self = shared_from_this();
+
+        // TRUE ZERO-COPY in user-space:
+        // We pass the memory-mapped pointer directly to ASIO.
+        // ASIO will read directly from the socket kernel buffer into the kernel page cache (mmap).
+        // No std::vector allocations, no memcpy!
+        socket->async_read_some(asio::buffer(mmap_ptr + current_offset, size_to_read),
+            [this, self, socket, session_id](const asio::error_code& ec, size_t bytes_transferred) {
+            if (!ec) {
+                FilePartition updated_p;
+                {
+                    std::lock_guard<std::mutex> lock(partitions_mutex_);
+                    updated_p = partitions_[session_id];
+                    updated_p.bytes_transferred += bytes_transferred;
+                    partitions_[session_id] = updated_p;
+                }
+
+                update_progress();
+
+                // Continue reading
+                start_data_receiver(socket, session_id);
+            } else {
+                if (ec != asio::error::eof && ec != asio::error::operation_aborted) {
+                    report_error("Data receiver socket read failed: " + ec.message());
+                }
+            }
+        });
+    }
+
+    void Session::update_progress() {
+        std::lock_guard<std::mutex> lock(partitions_mutex_);
+        uint64_t total_transferred = 0;
+        for (const auto& kv : partitions_) {
+            total_transferred += kv.second.bytes_transferred;
+        }
+
+        int progress = (total_file_size_ > 0) ? static_cast<int>(total_transferred * 100 / total_file_size_) : 0;
+
+        // UI 갱신이 너무 자주 호출되지 않도록 조절 로직 추가 가능
+        if (status_callback_) {
+            status_callback_(TransferState::PROGRESS, progress, "Transferring...");
+        }
     }
 } // namespace transfer::core
