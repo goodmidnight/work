@@ -13,13 +13,20 @@ TransferEngine::TransferEngine() : peer_node_(std::make_unique<PeerNode>()) {
     session_manager_ = std::make_shared<SessionManager>(peer_node_->get_io_context(), connect_fn);
 
     // Set up the connection handler that PeerNode will invoke when a TCP connection is accepted (Receiver side).
-    peer_node_->set_connection_handler([this](std::shared_ptr<asio::ip::tcp::socket> socket) {
+    peer_node_->set_connection_handler([this](std::shared_ptr<asio::ip::tcp::socket> socket, std::error_code ec) {
+        if (ec) {
+            LOGE("Connection accept failed: %s", ec.message().c_str());
+            // Receiver accept failure can be handled silently or propagated.
+            // In a server, we usually just log and keep listening.
+            return;
+        }
+
         if (!save_path_.empty()) {
             LOGI("Connection accepted. Delegating to SessionManager for: %s", save_path_.c_str());
-            session_manager_->handleIncomingSocket(std::move(socket));
+            session_manager_->handleIncomingSocket(std::move(socket), ec);
         } else {
             LOGE("Connection received, but receiver mode is not set properly!");
-            socket->close();
+            if (socket) socket->close();
         }
     });
     LOGI("TransferEngine initialized.");
@@ -32,6 +39,7 @@ TransferEngine::~TransferEngine() {
 // --- Configuration ---
 
 void TransferEngine::set_transfer_callback(const TransferCallback &callback) {
+    transfer_callback_ = callback;
     session_manager_->set_callback(callback);
 }
 
@@ -55,17 +63,25 @@ bool TransferEngine::startReceiver(uint16_t port, const std::string& save_path) 
     return peer_node_->startReceiver(port);
 }
 
-void TransferEngine::startSender(const std::string& ip, uint16_t port, const std::string& file_path) {
+void TransferEngine::startSender(const std::string& ip, uint16_t port, const std::string& file_path, int session_count) {
     save_path_.clear();
     file_to_send_ = file_path;
     peer_node_->start();
 
-    LOGI("Starting sender to %s:%d for file %s", ip.c_str(), port, file_path.c_str());
+    LOGI("Starting sender to %s:%d for file %s with %d sessions", ip.c_str(), port, file_path.c_str(), session_count);
 
-    peer_node_->connect(ip, port, [this, ip, port, file_path](std::shared_ptr<asio::ip::tcp::socket> socket) {
+    peer_node_->connect(ip, port, [this, ip, port, file_path, session_count](std::shared_ptr<asio::ip::tcp::socket> socket, std::error_code ec) {
+        if (ec) {
+            LOGE("Failed to establish initial Control Connection to %s:%d. Error: %s", ip.c_str(), port, ec.message().c_str());
+            // Invoke the callback directly to notify the UI/client that connection failed
+            if (transfer_callback_) {
+                transfer_callback_(file_path, TransferState::ERROR, 0, "Connection refused or failed: " + ec.message());
+            }
+            return;
+        }
+
         LOGI("Control connection established. Starting send session for: %s", file_path.c_str());
-        // Default to 4 sessions for now, can be configured later.
-        session_manager_->startSend(std::move(socket), file_path, ip, port, 4);
+        session_manager_->startSend(std::move(socket), file_path, ip, port, session_count);
     });
 }
 

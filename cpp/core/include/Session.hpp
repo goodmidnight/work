@@ -8,6 +8,7 @@
 #include <vector>
 #include <mutex>
 #include <map>
+#include <system_error>
 #include "Types.hpp"
 
 namespace transfer::core {
@@ -16,7 +17,7 @@ namespace transfer::core {
     class ReceiverPipe;
 
     using StatusCallback = std::function<void(TransferState state, int progress, const std::string& message)>;
-    using ConnectionHandler = std::function<void(std::shared_ptr<asio::ip::tcp::socket>)>;
+    using ConnectionHandler = std::function<void(std::shared_ptr<asio::ip::tcp::socket>, std::error_code)>;
     using ConnectFn = std::function<void(const std::string&, uint16_t, ConnectionHandler)>;
 
     struct FilePartition {

@@ -36,8 +36,9 @@ namespace transfer::core {
          * @param ip The IP address of the receiver.
          * @param port The port of the receiver.
          * @param file_path The path of the file to send.
+         * @param session_count The number of parallel data channels to open.
          */
-        void startSender(const std::string& ip, uint16_t port, const std::string& file_path);
+        void startSender(const std::string& ip, uint16_t port, const std::string& file_path, int session_count = 4);
 
         /**
          * @brief Stops all ongoing operations and shuts down the engine.
@@ -51,6 +52,9 @@ namespace transfer::core {
         // State for sender/receiver mode
         std::string file_to_send_;
         std::string save_path_;
+
+        // Store the callback to report connection errors directly
+        TransferCallback transfer_callback_;
     };
 
 } // namespace transfer::core

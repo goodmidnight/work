@@ -313,14 +313,14 @@ namespace transfer::core {
 
             if (connect_fn_) {
                 LOGI("Connecting Data Channel %d...", i);
-                connect_fn_(target_ip_, target_port_, [this, p](std::shared_ptr<asio::ip::tcp::socket> socket) {
-                    if (socket) {
-                        std::lock_guard<std::mutex> sock_lock(sockets_mutex_);
-                        data_sockets_.push_back(socket);
-                        do_data_channel_handshake(socket, p);
-                    } else {
-                        report_error("Failed to connect Data Channel.");
+                connect_fn_(target_ip_, target_port_, [this, p](std::shared_ptr<asio::ip::tcp::socket> socket, std::error_code ec) {
+                    if (ec || !socket) {
+                        report_error("Failed to connect Data Channel: " + ec.message());
+                        return;
                     }
+                    std::lock_guard<std::mutex> sock_lock(sockets_mutex_);
+                    data_sockets_.push_back(socket);
+                    do_data_channel_handshake(socket, p);
                 });
             }
         }

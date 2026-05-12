@@ -72,7 +72,7 @@ namespace transfer::core {
 
                     if (connection_handler_) {
                         auto socket_ptr = std::make_shared<asio::ip::tcp::socket>(std::move(socket));
-                        connection_handler_(socket_ptr);
+                        connection_handler_(socket_ptr, ec);
                     }
                 } catch (const std::exception &e) {
                     LOGE("[PeerNode] Socket tuning failed: %s", e.what());
@@ -80,6 +80,10 @@ namespace transfer::core {
             } else {
                 if (ec != asio::error::operation_aborted) {
                     LOGE("[PeerNode] Accept failed: %s", ec.message().c_str());
+                    if (connection_handler_) {
+                        // Pass null socket and the error code
+                        connection_handler_(nullptr, ec);
+                    }
                 }
             }
 
@@ -105,13 +109,17 @@ namespace transfer::core {
                     LOGI("[PeerNode] Connected successfully. Delegating socket.");
 
                     if (handler) {
-                        handler(socket);
+                        handler(socket, ec);
                     }
                 } catch (const std::exception &e) {
                     LOGE("[PeerNode] Socket tuning error: %s", e.what());
                 }
             } else {
                 LOGE("[PeerNode] Connection failed: %s", ec.message().c_str());
+                if (handler) {
+                    // Pass the error code back to the caller
+                    handler(nullptr, ec);
+                }
             }
         });
     }

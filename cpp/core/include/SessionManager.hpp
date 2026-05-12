@@ -6,6 +6,7 @@
 #include <asio/io_context.hpp>
 #include <asio/ip/tcp.hpp>
 #include <mutex>
+#include <system_error>
 #include "Types.hpp"
 #include "Session.hpp"
 
@@ -20,7 +21,8 @@ namespace transfer::core {
 
         void startReceive(std::shared_ptr<asio::ip::tcp::socket> control_socket, const std::string& save_path);
 
-        void handleIncomingSocket(std::shared_ptr<asio::ip::tcp::socket> socket);
+        // Handles incoming connections. Receives an error code from the network layer.
+        void handleIncomingSocket(std::shared_ptr<asio::ip::tcp::socket> socket, std::error_code ec);
 
         void stop();
 

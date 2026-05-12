@@ -5,11 +5,13 @@
 #include <string>
 #include <thread>
 #include <functional>
+#include <system_error>
 
 namespace transfer::core {
 
     using FdRequestCallback = std::function<int(const std::string &)>;
-    using ConnectionHandler = std::function<void(std::shared_ptr<asio::ip::tcp::socket>)>;
+    // ConnectionHandler now takes an error_code to propagate connection failures.
+    using ConnectionHandler = std::function<void(std::shared_ptr<asio::ip::tcp::socket>, std::error_code)>;
 
     class PeerNode {
     public:
@@ -20,8 +22,7 @@ namespace transfer::core {
         void stop();
         bool startReceiver(uint16_t port);
 
-        // Removed startSender(ip, port) in favor of a flexible connect method
-        // that allows creating multiple data channels.
+        // Flexible connect method that allows creating multiple data channels.
         void connect(const std::string &ip, uint16_t port, ConnectionHandler handler);
 
         // Sets the handler for incoming connections (Control or Data channel)

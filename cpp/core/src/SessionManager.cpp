@@ -57,8 +57,14 @@ void SessionManager::startReceive(std::shared_ptr<asio::ip::tcp::socket> socket,
     session_->startReceive(save_path);
 }
 
-void SessionManager::handleIncomingSocket(std::shared_ptr<asio::ip::tcp::socket> socket) {
+void SessionManager::handleIncomingSocket(std::shared_ptr<asio::ip::tcp::socket> socket, std::error_code ec) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    if (ec) {
+        LOGE("Incoming socket error: %s", ec.message().c_str());
+        return;
+    }
+
     if (session_) {
         // If there's an active session, this must be a Data Channel.
         LOGI("New socket connected. Delegating to active session as Data Channel.");
@@ -70,8 +76,10 @@ void SessionManager::handleIncomingSocket(std::shared_ptr<asio::ip::tcp::socket>
             startReceive(std::move(socket), save_path_);
         } else {
             LOGE("Received socket, but no session is active and no save_path is configured.");
-            asio::error_code ec;
-            socket->close(ec);
+            if (socket) {
+                asio::error_code ignore_ec;
+                socket->close(ignore_ec);
+            }
         }
     }
 }
