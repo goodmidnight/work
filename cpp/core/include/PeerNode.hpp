@@ -19,8 +19,12 @@ namespace transfer::core {
         void start();
         void stop();
         bool startReceiver(uint16_t port);
-        void startSender(const std::string &ip, uint16_t port);
 
+        // Removed startSender(ip, port) in favor of a flexible connect method
+        // that allows creating multiple data channels.
+        void connect(const std::string &ip, uint16_t port, ConnectionHandler handler);
+
+        // Sets the handler for incoming connections (Control or Data channel)
         void set_connection_handler(ConnectionHandler handler) {
             connection_handler_ = std::move(handler);
         }
@@ -33,7 +37,6 @@ namespace transfer::core {
 
     private:
         void do_accept();
-        void do_connect(const asio::ip::tcp::endpoint& endpoint);
 
         static constexpr size_t TCP_BUFFER_SIZE = 8 * 1024 * 1024;
 
@@ -41,7 +44,6 @@ namespace transfer::core {
         asio::executor_work_guard<asio::io_context::executor_type> work_guard_;
         std::thread worker_thread_;
         asio::ip::tcp::acceptor acceptor_;
-        asio::ip::tcp::socket socket_;
 
         ConnectionHandler connection_handler_;
     };

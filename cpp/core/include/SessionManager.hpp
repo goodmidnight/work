@@ -6,40 +6,41 @@
 #include <asio/io_context.hpp>
 #include <asio/ip/tcp.hpp>
 #include <mutex>
-#include "Types.hpp" // Include the new types header
+#include "Types.hpp"
+#include "Session.hpp"
 
 namespace transfer::core {
 
-    // Forward-declare Session to break the circular dependency.
-    class Session;
-
-    /**
-     * @class SessionManager
-     * @brief Manages the lifecycle of a single transfer session and reports its status.
-     *        It acts as a bridge between the network session and the application layer (e.g., JNI).
-     */
     class SessionManager {
     public:
-        SessionManager(asio::io_context& io_context);
+        SessionManager(asio::io_context& io_context, ConnectFn connect_fn);
         ~SessionManager();
 
-        void startSend(std::shared_ptr<asio::ip::tcp::socket> socket, const std::string& file_path);
-        void startReceive(std::shared_ptr<asio::ip::tcp::socket> socket, const std::string& save_path);
+        void startSend(std::shared_ptr<asio::ip::tcp::socket> control_socket, const std::string& file_path, const std::string& target_ip, uint16_t target_port, int session_count);
+
+        void startReceive(std::shared_ptr<asio::ip::tcp::socket> control_socket, const std::string& save_path);
+
+        void handleIncomingSocket(std::shared_ptr<asio::ip::tcp::socket> socket);
+
         void stop();
 
         // --- Dependency Injections ---
         void set_callback(TransferCallback cb) { callback_ = std::move(cb); }
         void set_fd_callback(FdRequestCallback cb) { fd_callback_ = std::move(cb); }
         void set_encryption_key(const std::string& key) { encryption_key_ = key; }
+        void set_save_path(const std::string& path) { save_path_ = path; }
 
     private:
         asio::io_context& io_context_;
+        ConnectFn connect_fn_;
+
         std::shared_ptr<Session> session_;
         std::mutex mutex_;
 
         TransferCallback callback_;
         FdRequestCallback fd_callback_;
         std::string encryption_key_;
+        std::string save_path_;
     };
 
 } // namespace transfer::core
