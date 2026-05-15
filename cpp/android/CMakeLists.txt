@@ -6,7 +6,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../core ${CMAKE_CURRENT_BINARY_DIR}
 if (CMAKE_SYSTEM_NAME STREQUAL "Android")
 
     #  Define the JNI wrapper source file
-    set(JNI_SRC transfer_wrapper_jni.cpp)
+    set(JNI_SRC TransferWrapperJni.cpp)
 
     # Create the shared library (.so) for the Android app
     add_library(transfer_jni SHARED ${JNI_SRC})
