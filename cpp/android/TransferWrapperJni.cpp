@@ -67,19 +67,28 @@ void init_engine_if_needed() {
     }
 }
 
-static jboolean nativeStartReceiver(JNIEnv *env, jobject thiz, jint port, jstring save_path) {
+/**
+ * Standard JNI naming allows the IDE to resolve functions and enables navigation.
+ * Since Kotlin side uses @JvmStatic on 'object TransferEngine' methods,
+ * the second parameter must be 'jclass' (not jobject).
+ */
+extern "C" {
+
+JNIEXPORT jboolean JNICALL
+Java_io_goodmidnight_transfer_data_jni_TransferEngine_startReceiver(JNIEnv *env, jclass clazz, jint port, jstring save_path) {
     init_engine_if_needed();
     const char *native_save_path = env->GetStringUTFChars(save_path, nullptr);
     if (!native_save_path) {
-        LOGE("JNI: save_path is null in nativeStartReceiver.");
-        return false;
+        LOGE("JNI: save_path is null in startReceiver.");
+        return JNI_FALSE;
     }
     bool result = global_engine->startReceiver(static_cast<uint16_t>(port), native_save_path);
     env->ReleaseStringUTFChars(save_path, native_save_path);
-    return result;
+    return result ? JNI_TRUE : JNI_FALSE;
 }
 
-static void nativeStartSender(JNIEnv *env, jobject thiz, jstring ip, jint port, jstring file_path) {
+JNIEXPORT void JNICALL
+Java_io_goodmidnight_transfer_data_jni_TransferEngine_startSender(JNIEnv *env, jclass clazz, jstring ip, jint port, jstring file_path) {
     init_engine_if_needed();
     const char *native_ip = env->GetStringUTFChars(ip, nullptr);
     const char *native_file_path = env->GetStringUTFChars(file_path, nullptr);
@@ -87,14 +96,15 @@ static void nativeStartSender(JNIEnv *env, jobject thiz, jstring ip, jint port, 
     if (native_ip && native_file_path) {
         global_engine->startSender(native_ip, static_cast<uint16_t>(port), native_file_path);
     } else {
-        LOGE("JNI: IP or file_path is null in nativeStartSender.");
+        LOGE("JNI: IP or file_path is null in startSender.");
     }
 
     if (native_ip) env->ReleaseStringUTFChars(ip, native_ip);
     if (native_file_path) env->ReleaseStringUTFChars(file_path, native_file_path);
 }
 
-static void nativeStopEngine(JNIEnv *env, jobject thiz) {
+JNIEXPORT void JNICALL
+Java_io_goodmidnight_transfer_data_jni_TransferEngine_stopEngine(JNIEnv *env, jclass clazz) {
     std::lock_guard<std::mutex> lock(engine_mutex);
     if (global_engine) {
         global_engine->stop();
@@ -103,13 +113,7 @@ static void nativeStopEngine(JNIEnv *env, jobject thiz) {
     }
 }
 
-static JNINativeMethod g_methods[] = {
-    {"startReceiver", "(ILjava/lang/String;)Z", (void *) nativeStartReceiver},
-    {"startSender",   "(Ljava/lang/String;ILjava/lang/String;)V", (void *) nativeStartSender},
-    {"stopEngine",    "()V", (void *) nativeStopEngine}
-};
-
-extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     g_jni.jvm = vm;
     JNIEnv *env;
     if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
@@ -119,11 +123,7 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     jclass localClass = env->FindClass(JNI_CLASS_PATH);
     if (!localClass) return JNI_ERR;
 
-    int numMethods = sizeof(g_methods) / sizeof(g_methods[0]);
-    if (env->RegisterNatives(localClass, g_methods, numMethods) < 0) {
-        env->DeleteLocalRef(localClass);
-        return JNI_ERR;
-    }
+    // We no longer need RegisterNatives because we use standard JNI naming.
 
     g_jni.engineClass = (jclass) env->NewGlobalRef(localClass);
     env->DeleteLocalRef(localClass);
@@ -134,7 +134,7 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     return JNI_VERSION_1_6;
 }
 
-extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
+JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
     JNIEnv *env;
     if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) == JNI_OK) {
         if (g_jni.engineClass) {
@@ -143,3 +143,5 @@ extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
         }
     }
 }
+
+} // extern "C"
