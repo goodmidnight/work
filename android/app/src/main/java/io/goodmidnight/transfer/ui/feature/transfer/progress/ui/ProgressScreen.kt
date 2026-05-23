@@ -78,6 +78,8 @@ fun ProgressScreen(
             SharedState.TransferStatus.IDLE -> {
                 // Maintained as empty; Route will handle popping the back stack.
             }
+
+            SharedState.TransferStatus.LISTENING -> TODO()
         }
     }
 }

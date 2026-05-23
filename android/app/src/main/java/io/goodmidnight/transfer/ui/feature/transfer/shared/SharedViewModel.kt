@@ -12,7 +12,6 @@ import io.goodmidnight.transfer.core.connection.ConnectionEvent.StopDiscovery
 import io.goodmidnight.transfer.core.connection.ConnectionEvent.StopHosting
 import io.goodmidnight.transfer.core.connection.ConnectionOrchestrator
 import io.goodmidnight.transfer.core.connection.ConnectionState
-import io.goodmidnight.transfer.core.exception.CommonException
 import io.goodmidnight.transfer.core.qr.QrGenerator
 import io.goodmidnight.transfer.core.transfer.TransferController
 import io.goodmidnight.transfer.core.transfer.TransferEvent
@@ -37,43 +36,35 @@ class SharedViewModel @Inject constructor(
     private val getSettingsUseCase: GetSettingsUseCase
 ) : BaseViewModel<SharedState, SharedEvent, SharedEffect, AppError>(SharedState()) {
 
+    companion object {
+        private const val SOCKET_PORT = 50001
+    }
+
     init {
-        // Wire up all reactive streams from underlying controllers.
         observeOrchestratorState()
         observeOrchestratorEffect()
         observeTransferState()
-        observeState()
+        observeSettings()
 
-        // Map incoming UI events to downstream controller commands.
         bindEvent { event ->
             when (event) {
                 is SharedEvent.OnSelectFiles -> updateState { copy(selectedFiles = event.uris) }
-
-                is SharedEvent.OnStartDiscovery -> orchestrator.processEvent(StartDiscovery(event.mode))
-                is SharedEvent.OnStopDiscovery -> orchestrator.processEvent(StopDiscovery)
-                is SharedEvent.OnConnectToPeer -> orchestrator.processEvent(ConnectToPeer(event.peer))
-
-                is SharedEvent.OnStartHosting -> handleStartHosting(event.deviceName, event.mode)
-                is SharedEvent.OnStopHosting -> orchestrator.processEvent(StopHosting)
-
-                is SharedEvent.OnCancelTransfer -> {
-                    // Halts C++ engine and tears down the socket simultaneously.
-                    transferController.processEvent(TransferEvent.CancelTransfer)
-                    orchestrator.processEvent(Disconnect)
+                is SharedEvent.OnStartDiscovery -> viewModelScope.launch { orchestrator.processEvent(StartDiscovery(event.mode)) }
+                is SharedEvent.OnStopDiscovery -> viewModelScope.launch { orchestrator.processEvent(StopDiscovery) }
+                is SharedEvent.OnConnectToPeer -> {
+                    updateState { copy(transferStatus = SharedState.TransferStatus.CONNECTING) }
+                    viewModelScope.launch { orchestrator.processEvent(ConnectToPeer(event.peer)) }
                 }
-
+                is SharedEvent.OnStartHosting -> handleStartHosting(event.deviceName, event.mode)
+                is SharedEvent.OnStopHosting -> handleStopHosting()
+                is SharedEvent.OnCancelTransfer -> handleCancelTransfer()
                 is SharedEvent.OnConnectQr -> handleConnectQr(event.ip, event.ssid, event.pw)
-
                 SharedEvent.OnCheckPendingFiles -> handlePendingFiles()
             }
         }
     }
 
-    /**
-     * Subscribes to DataStore changes.
-     * NOTE: Receiving file resolution is handled natively in the Data Layer via SettingsRepository.
-     */
-    private fun observeState() {
+    private fun observeSettings() {
         viewModelScope.launch {
             getSettingsUseCase().collect { settings ->
                 val location = settings.saveLocation.ifBlank { "Downloads/Transfer" }
@@ -99,9 +90,17 @@ class SharedViewModel @Inject constructor(
     private fun observeTransferState() {
         viewModelScope.launch {
             transferController.state.collect { transferState ->
+                val newStatus = mapTransferStatus(transferState.status)
+                
+                // 수신/전송 완료 시 Effect 발생
+                if (newStatus == SharedState.TransferStatus.COMPLETED && 
+                    state.value.transferStatus != SharedState.TransferStatus.COMPLETED) {
+                    emitEffect(SharedEffect.TransferCompleted)
+                }
+
                 updateState {
                     copy(
-                        transferStatus = mapTransferStatus(transferState.status),
+                        transferStatus = newStatus,
                         currentProgress = transferState.progress,
                         currentFileName = transferState.currentFileName
                     )
@@ -110,26 +109,29 @@ class SharedViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Listens for a successful handshake from the Orchestrator.
-     * Once connected, it translates Android Uris to absolute POSIX file paths
-     * and kicks off the native C++ file transfer engine.
-     */
     private fun observeOrchestratorEffect() {
         viewModelScope.launch {
             orchestrator.effect.collect { effect ->
-                if (effect is ConnectionEffect.ConnectionEstablished) {
-                    // Convert SAF Uris to absolute paths readable by the C++ engine.
-                    val filePaths = state.value.selectedFiles.mapNotNull { uri ->
-                        fileResolver.getAbsolutePathFromUri(uri)
-                    }
+                when (effect) {
+                    is ConnectionEffect.ConnectionEstablished -> {
+                        val filePaths = state.value.selectedFiles.mapNotNull { uri ->
+                            fileResolver.getAbsolutePathFromUri(uri)
+                        }
 
-                    if (filePaths.isNotEmpty()) {
-                        transferController.processEvent(
-                            TransferEvent.StartTransfer(effect.hostIp, effect.port, filePaths)
-                        )
-                    } else {
-                        emitError(AppError.of(CommonException.UnknownException("전환할 수 있는 파일이 없습니다.")))
+                        if (filePaths.isNotEmpty()) {
+                            transferController.processEvent(
+                                TransferEvent.StartTransfer(effect.hostIp, effect.port, filePaths)
+                            )
+                        } else {
+                            // 수신 측인 경우 LISTENING 상태 유지
+                            updateState { copy(transferStatus = SharedState.TransferStatus.LISTENING) }
+                        }
+                    }
+                    is ConnectionEffect.ConnectionLost -> {
+                        viewModelScope.launch {
+                            transferController.processEvent(TransferEvent.CancelTransfer)
+                        }
+                        updateState { copy(transferStatus = SharedState.TransferStatus.IDLE) }
                     }
                 }
             }
@@ -138,11 +140,13 @@ class SharedViewModel @Inject constructor(
 
     private fun handleStartHosting(deviceName: String, mode: ConnectionState.ConnectionMode) {
         viewModelScope.launch {
+            // Hosting 시작 전 상태 초기화 및 스피너 준비
+            updateState { copy(qrBitmap = null, transferStatus = SharedState.TransferStatus.LISTENING) }
+
             val ip = orchestrator.state.value.localIp ?: "0.0.0.0"
             val ssid = "DIRECT-Transfer-${(1000..9999).random()}"
             val pw = (10000000..99999999).random().toString()
 
-            // Offload heavy Bitmap generation to a background thread to prevent UI freezing.
             val qrBitmap = withContext(Dispatchers.Default) {
                 qrGenerator.generate(ssid, pw, ip)
             }
@@ -154,11 +158,28 @@ class SharedViewModel @Inject constructor(
                     mode = mode,
                     deviceName = deviceName,
                     wifiIp = ip,
-                    port = 8080,
+                    port = SOCKET_PORT,
                     ssid = ssid,
                     pw = pw
                 )
             )
+            transferController.processEvent(TransferEvent.StartListening(SOCKET_PORT))
+        }
+    }
+
+    private fun handleStopHosting() {
+        viewModelScope.launch {
+            orchestrator.processEvent(StopHosting)
+            transferController.processEvent(TransferEvent.CancelTransfer)
+            updateState { copy(isHosting = false, qrBitmap = null, transferStatus = SharedState.TransferStatus.IDLE) }
+        }
+    }
+
+    private fun handleCancelTransfer() {
+        viewModelScope.launch {
+            transferController.processEvent(TransferEvent.CancelTransfer)
+            orchestrator.processEvent(Disconnect)
+            updateState { copy(transferStatus = SharedState.TransferStatus.IDLE) }
         }
     }
 

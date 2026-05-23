@@ -1,5 +1,8 @@
 package io.goodmidnight.transfer.ui.feature.transfer.home.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -87,16 +91,19 @@ fun HomeScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             when {
-                sharedState.isHosting -> {
+                // 수신(Hosting) 모드 우선 순위
+                sharedState.isHosting || sharedState.transferStatus == SharedState.TransferStatus.LISTENING -> {
                     HostingView(
                         sharedState = sharedState,
                         onCancelClick = onCancelHosting
                     )
                 }
 
-                sharedState.isDiscovering -> {
+                // 송신(Discovery) 모드
+                sharedState.isDiscovering || sharedState.transferStatus == SharedState.TransferStatus.CONNECTING -> {
                     SendDiscoveryView(
                         peers = sharedState.discoveredPeers,
+                        status = sharedState.transferStatus,
                         onPeerClick = onPeerClick,
                         onCancelClick = onCancelDiscovery
                     )
@@ -169,7 +176,6 @@ private fun DefaultHomeView(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Receive Section
         Card(style = CardStyle.DEFAULT) {
             Column(
                 modifier = Modifier.padding(20.dp),
@@ -193,9 +199,12 @@ private fun DefaultHomeView(
 @Composable
 private fun SendDiscoveryView(
     peers: List<Peer>,
+    status: SharedState.TransferStatus,
     onPeerClick: (Peer) -> Unit,
     onCancelClick: () -> Unit,
 ) {
+    val isConnecting = status == SharedState.TransferStatus.CONNECTING
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -204,46 +213,54 @@ private fun SendDiscoveryView(
 
         CircularProgressIndicator(
             modifier = Modifier.size(48.dp),
-            color = Theme.colorScheme.accent,
+            color = if (isConnecting) Theme.colorScheme.accent else Theme.colorScheme.icon,
             strokeWidth = 4.dp
         )
 
         Spacer(modifier = Modifier.height(24.dp))
-        HeadlineLargeText(text = "Searching...")
+        HeadlineLargeText(text = if (isConnecting) "Connecting..." else "Searching...")
         Spacer(modifier = Modifier.height(8.dp))
         BodyMediumText(
-            text = "Select a nearby device to send your files.",
+            text = if (isConnecting) "Establishing a secure connection." else "Select a nearby device to send your files.",
             color = Theme.colorScheme.secondaryText
         )
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(bottom = 16.dp)
+        AnimatedVisibility(
+            visible = !isConnecting,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.weight(1f)
         ) {
-            items(peers) { peer ->
-                Card(
-                    style = CardStyle.VARIANT,
-                    modifier = Modifier.clickable { onPeerClick(peer) }
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .padding(16.dp)
-                            .fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 16.dp)
+            ) {
+                items(peers) { peer ->
+                    Card(
+                        style = CardStyle.VARIANT,
+                        modifier = Modifier.clickable { onPeerClick(peer) }
                     ) {
-                        BodyLargeText(text = peer.deviceName)
-                        LabelMediumText(
-                            text = peer.type.name,
-                            color = Theme.colorScheme.secondaryText
-                        )
+                        Row(
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BodyLargeText(text = peer.deviceName)
+                            LabelMediumText(
+                                text = peer.type.name,
+                                color = Theme.colorScheme.secondaryText
+                            )
+                        }
                     }
                 }
             }
         }
+
+        if (isConnecting) Spacer(modifier = Modifier.weight(1f))
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -252,49 +269,74 @@ private fun SendDiscoveryView(
             onClick = onCancelClick,
             modifier = Modifier
                 .fillMaxWidth(0.6f)
-                .height(56.dp) // Height is applied securely
+                .height(56.dp)
         )
-        Spacer(modifier = Modifier.height(32.dp)) // Safe area margin extracted
+        Spacer(modifier = Modifier.height(32.dp))
     }
 }
 
 @Composable
 private fun HostingView(sharedState: SharedState, onCancelClick: () -> Unit) {
+    val isCompleted = sharedState.transferStatus == SharedState.TransferStatus.COMPLETED
+    val isTransferring = sharedState.transferStatus == SharedState.TransferStatus.TRANSFERRING
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        HeadlineLargeText(text = "Ready to Receive")
+        if (isCompleted) {
+            Icon(
+                imageVector = Icons.Rounded.CheckCircle,
+                contentDescription = null,
+                tint = Theme.colorScheme.success,
+                modifier = Modifier.size(72.dp)
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            HeadlineLargeText(text = "Transfer Completed")
+        } else {
+            HeadlineLargeText(text = if (isTransferring) "Receiving..." else "Ready to Receive")
+        }
+        
         Spacer(modifier = Modifier.height(16.dp))
 
         BodyMediumText(
-            text = "Your device is visible to nearby senders.\nSelect your device from their radar, or scan the QR code below.",
+            text = when {
+                isCompleted -> "All files have been received successfully."
+                isTransferring -> "Receiving ${sharedState.currentFileName}..."
+                else -> "Your device is visible to nearby senders.\nSelect your device from their radar."
+            },
             color = Theme.colorScheme.secondaryText,
             textAlign = TextAlign.Center
         )
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        Card(style = CardStyle.OUTLINED) {
-            Box(
-                modifier = Modifier.padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                sharedState.qrBitmap?.let {
-                    Image(
-                        bitmap = it.asImageBitmap(),
-                        contentDescription = "Connection QR Code",
-                        modifier = Modifier.size(240.dp) // Ensures the QR code never stretches unpredictably
-                    )
-                } ?: CircularProgressIndicator(color = Theme.colorScheme.accent)
+        if (!isCompleted && !isTransferring) {
+            Card(style = CardStyle.OUTLINED) {
+                Box(
+                    modifier = Modifier.padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    sharedState.qrBitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "Connection QR Code",
+                            modifier = Modifier.size(240.dp)
+                        )
+                    } ?: Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = Theme.colorScheme.accent)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        LabelMediumText(text = "Preparing WiFi Direct...")
+                    }
+                }
             }
         }
 
         Spacer(modifier = Modifier.height(48.dp))
 
         SecondaryButton(
-            text = "Cancel",
+            text = if (isCompleted) "Done" else "Cancel",
             onClick = onCancelClick,
             modifier = Modifier
                 .width(200.dp)
@@ -306,53 +348,16 @@ private fun HostingView(sharedState: SharedState, onCancelClick: () -> Unit) {
 @Composable
 @ComponentPreview
 private fun HomeScreenDiscoveringPreview() {
-    val dummyPeers = List(15) { index ->
-        Peer(address = "$index", deviceName = "Device $index", type = Peer.Type.WIFI_DIRECT)
-    }
-
     Theme {
         HomeScreen(
-            state = HomeState(
-                deviceName = "Pixel 8 Pro",
-            ),
+            state = HomeState(deviceName = "Pixel 8 Pro"),
             sharedState = SharedState(
-                isHosting = false,
-                isDiscovering = false,
-                discoveredPeers = dummyPeers
+                isDiscovering = true,
+                transferStatus = SharedState.TransferStatus.IDLE
             ),
-            onSettingsClick = {},
-            onQrScanClick = {},
-            onSendPhotosClick = {},
-            onSendDocumentsClick = {},
-            onReceiveClick = {},
-            onPeerClick = {},
-            onCancelHosting = {},
-            onCancelDiscovery = {}
-        )
-    }
-}
-
-@Composable
-@ComponentPreview
-private fun HomeScreenHostingPreview() {
-    Theme {
-        HomeScreen(
-            state = HomeState(
-                deviceName = "Pixel 8 Pro",
-            ),
-            sharedState = SharedState(
-                isHosting = true,
-                isDiscovering = false,
-                qrBitmap = null
-            ),
-            onSettingsClick = {},
-            onQrScanClick = {},
-            onSendPhotosClick = {},
-            onSendDocumentsClick = {},
-            onReceiveClick = {},
-            onPeerClick = {},
-            onCancelHosting = {},
-            onCancelDiscovery = {}
+            onSettingsClick = {}, onQrScanClick = {}, onSendPhotosClick = {},
+            onSendDocumentsClick = {}, onReceiveClick = {}, onPeerClick = {},
+            onCancelHosting = {}, onCancelDiscovery = {}
         )
     }
 }
