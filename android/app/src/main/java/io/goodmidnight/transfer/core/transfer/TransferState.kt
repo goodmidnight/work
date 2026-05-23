@@ -9,6 +9,7 @@ data class TransferState(
 ) {
     enum class TransferStatus {
         IDLE,
+        LISTENING,
         CONNECTING,
         TRANSFERRING,
         COMPLETED,

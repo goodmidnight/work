@@ -2,11 +2,7 @@ package io.goodmidnight.transfer.core.transfer
 
 sealed interface TransferEvent {
     /**
-     * Initiates the file transfer process.
-     *
-     * @param ip The IP address of the target device (or hotspot gateway).
-     * @param port The port number for socket communication.
-     * @param fileUris A list of File URIs (SAF) or absolute paths to be transferred.
+     * Initiates the file transfer process (Sender mode).
      */
     data class StartTransfer(
         val ip: String,
@@ -15,7 +11,12 @@ sealed interface TransferEvent {
     ) : TransferEvent
 
     /**
-     * Forcefully cancels the ongoing file transfer.
+     * Starts listening for incoming connections (Receiver mode).
+     */
+    data class StartListening(val port: Int) : TransferEvent
+
+    /**
+     * Forcefully cancels the ongoing file transfer or stops listening.
      */
     data object CancelTransfer : TransferEvent
 }
