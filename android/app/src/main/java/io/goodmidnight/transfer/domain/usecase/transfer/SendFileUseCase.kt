@@ -9,10 +9,8 @@ import javax.inject.Inject
 
 /**
  * UseCase for orchestrating the transfer of files.
- * It establishes a high-speed P2P connection first (opening parallel pipes),
- * then sequentially delegates the transfer of each file to the C++ engine.
- *
- * This acts as a convenient wrapper, combining the 'connect' and 'push' operations.
+ * In the updated engine, each file transfer initiates its own session 
+ * via the unified startSender method which handles both connection and transmission.
  */
 class SendFileUseCase @Inject constructor(
     private val repository: TransferRepository
@@ -24,15 +22,11 @@ class SendFileUseCase @Inject constructor(
      */
     operator fun invoke(ip: String, port: Int, fileUris: List<String>): Flow<TransferResult> =
         flow {
-            // Step 1: Establish the parallel TCP socket connections with the target device.
-            // We use 4 parallel sessions by default to maximize bandwidth.
-            repository.startSender(ip = ip, port = port, sessionCount = 4)
-
-            // Step 2: Iterate through the requested files and transmit them sequentially.
-            // The C++ engine handles the chunking and parallelization automatically.
+            // Iterate through the requested files and transmit them sequentially.
+            // The repository.startSender now combines connection and transmission into one flow.
             for (uri in fileUris) {
-                // emitAll forwards the real-time TransferResult (Progress, Completed) to the ViewModel.
-                emitAll(repository.pushFile(uri))
+                // emitAll forwards the real-time TransferResult (Progress, Completed) to the UI layer.
+                emitAll(repository.startSender(ip = ip, port = port, filePath = uri))
             }
         }
 }

@@ -15,7 +15,7 @@ object TransferEngine {
 
     // The name of the compiled C++ shared library (.so)
     // This must exactly match the target_link_libraries name in CMakeLists.txt
-    private const val LIB_NAME = "transfer_core"
+    private const val LIB_NAME = "transfer_jni"
 
     init {
         try {
@@ -39,30 +39,27 @@ object TransferEngine {
      * Opens a socket on the specified port and listens for incoming connections.
      *
      * @param port The TCP port to bind to.
+     * @param savePath The absolute path of the directory where received files will be stored.
      * @return True if listening started successfully, false otherwise.
      */
-    external fun startReceiver(port: Int): Boolean
+    @JvmStatic
+    external fun startReceiver(port: Int, savePath: String): Boolean
 
     /**
      * [Sender / Spoke Mode]
-     * Establishes multiple parallel TCP connections to the target IP address.
+     * Establishes multiple parallel TCP connections to the target IP address and sends a file.
      *
      * @param ip The target device's IPv4 address.
      * @param port The target TCP port.
-     * @param sessionCount The number of parallel pipes to establish (default is 4 for max throughput).
+     * @param filePath The absolute path of the file to send.
      */
-    external fun startSender(ip: String, port: Int, sessionCount: Int = 4)
-
-    /**
-     * Enqueues a file to be pushed across the active network pipes.
-     *
-     * @param filePath The absolute path or identifier of the file to send.
-     */
-    external fun pushFile(filePath: String)
+    @JvmStatic
+    external fun startSender(ip: String, port: Int, filePath: String)
 
     /**
      * Gracefully stops the native engine, closing all sockets and terminating ASIO threads.
      */
+    @JvmStatic
     external fun stopEngine()
 
 

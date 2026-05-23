@@ -14,20 +14,23 @@ interface TransferRepository {
 
     /**
      * [Hub Mode] Opens a port and listens for incoming connections.
+     * Implementation should handle the storage path internally.
      */
     fun startReceiver(port: Int): Boolean
 
     /**
-     * [Spoke Mode] Connects to the target peer with multiple parallel pipes.
+     * [Spoke Mode] Connects to the target peer and starts sending a specific file.
+     * @return A Flow of TransferResult to track the progress of this specific transfer.
      */
-    fun startSender(ip: String, port: Int, sessionCount: Int = 4)
+    fun startSender(ip: String, port: Int, filePath: String): Flow<TransferResult>
 
     /**
-     * Enqueues a file (by its absolute path or content URI) for transmission.
+     * Gracefully stops the transfer engine.
      */
-    fun pushFile(fileUriOrPath: String): Flow<TransferResult>
-
     fun stopTransfer()
 
+    /**
+     * Updates the global transfer progress state.
+     */
     fun updateProgress(state: TransferProgress)
 }
