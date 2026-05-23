@@ -1,6 +1,5 @@
 package io.goodmidnight.transfer.core.connection
 
-import io.goodmidnight.transfer.core.connection.wifidirect.WifiDirectErrorCode
 import io.goodmidnight.transfer.core.exception.ApplicationException
 import io.goodmidnight.transfer.core.exception.ErrorCode
 
@@ -17,5 +16,11 @@ sealed class ConnectionException(
         override val message: String = "Unsupported peer type selected for connection",
         override val cause: Throwable? = null,
         override val errorCode: ErrorCode = ConnectionErrorCode.UNSUPPORTED_PEER_TYPE
+    ) : ConnectionException(message, cause, errorCode)
+
+    data class FailedConnectionException(
+        override val message: String,
+        override val cause: Throwable? = null,
+        override val errorCode: ErrorCode = ConnectionErrorCode.CONNECTION_ERROR,
     ) : ConnectionException(message, cause, errorCode)
 }

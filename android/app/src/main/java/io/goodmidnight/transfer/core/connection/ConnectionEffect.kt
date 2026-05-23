@@ -14,4 +14,9 @@ sealed interface ConnectionEffect {
         val port: Int,
         val type: Peer.Type
     ) : ConnectionEffect
+
+    /**
+     * Emitted when an active connection is lost.
+     */
+    data class ConnectionLost(val type: Peer.Type) : ConnectionEffect
 }

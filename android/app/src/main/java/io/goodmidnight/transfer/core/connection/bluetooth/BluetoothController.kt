@@ -17,10 +17,10 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -31,8 +31,8 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Bluetooth LE Controller for exchanging initial connection (Handshake) information for P2P file transfer.
- * The Host opens a GATT server to provide connection details, and the Client scans to read them.
+ * Bluetooth LE Controller for exchanging initial connection (Handshake) information.
+ * Handles both Scanning (Client) and Advertising (Host).
  */
 @SuppressLint("MissingPermission")
 class BluetoothController @Inject constructor(
@@ -41,20 +41,21 @@ class BluetoothController @Inject constructor(
     "BluetoothController",
     BluetoothState()
 ) {
-    private val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-    private val adapter: BluetoothAdapter? = btManager.adapter
-    private val scanner: BluetoothLeScanner? = adapter?.bluetoothLeScanner
-    private val advertiser: BluetoothLeAdvertiser? = adapter?.bluetoothLeAdvertiser
+    private val btManager: BluetoothManager by lazy { 
+        context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager 
+    }
+    
+    // Always get the latest instances from the adapter to handle BT toggle (ON/OFF)
+    private val adapter: BluetoothAdapter? get() = btManager.adapter
+    private val scanner: BluetoothLeScanner? get() = adapter?.bluetoothLeScanner
+    private val advertiser: BluetoothLeAdvertiser? get() = adapter?.bluetoothLeAdvertiser
 
-    // GATT Server (for data provider/Host) and Client (for data consumer/Scanner)
     private var gattServer: BluetoothGattServer? = null
     private var bluetoothGatt: BluetoothGatt? = null
-
-    // Cached JSON payload containing Wi-Fi/Hotspot info to be provided by the host
     private var hostingPayload: ByteArray = ByteArray(0)
 
     companion object {
-        // Unique UUIDs for app identification, used in scan filters and service/characteristic definition.
+        private const val TAG = "BluetoothController"
         val SERVICE_UUID: UUID = UUID.fromString("13f8c85e-5c4f-4d9a-8e2b-3a5c1d4e7f9a")
         val CHARACTERISTIC_UUID: UUID = UUID.fromString("24a9c85e-5c4f-4d9a-8e2b-3a5c1d4e7f9b")
     }
@@ -66,19 +67,20 @@ class BluetoothController @Inject constructor(
             is BluetoothEvent.StartAdvertising -> handleStartAdvertising(
                 event.wifiIp, event.port, event.ssid, event.pw
             )
-
             is BluetoothEvent.StopAdvertising -> handleStopAdvertising()
             is BluetoothEvent.ConnectGatt -> handleConnectGatt(event.macAddress)
         }
     }
 
     private fun handleStartAdvertising(ip: String, port: Int, ssid: String, pw: String) {
-        if (advertiser == null) {
-            emitError(BluetoothException.AdvertiseException(message = "Bluetooth Advertiser is not supported on this device."))
+        Log.i(TAG, "Starting Advertising: IP=$ip, Port=$port")
+        val currentAdvertiser = advertiser
+        if (currentAdvertiser == null) {
+            Log.e(TAG, "Bluetooth Advertiser not supported or BT is OFF")
+            emitError(BluetoothException.AdvertiseException(message = "Bluetooth Advertiser not supported"))
             return
         }
 
-        // Serialize large payload into JSON and cache in memory
         val jsonString = JSONObject().apply {
             put("ip", ip)
             put("port", port)
@@ -97,34 +99,33 @@ class BluetoothController @Inject constructor(
         service.addCharacteristic(characteristic)
         gattServer?.addService(service)
 
-        // Configure Advertising packet (Broadcast only the app-specific UUID without payload)
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
             .setConnectable(true)
+            .setTimeout(0)
             .build()
 
-        val data = AdvertiseData.Builder()
+        // Critical: Put UUID in the primary packet to ensure discovery
+        val advertiseData = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(SERVICE_UUID))
+            .setIncludeTxPowerLevel(false)
             .build()
 
-        //  Start Advertising using runCatching for functional error handling
+        // Put device name in the scan response to save space in the main packet
+        val scanResponseData = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
+            .build()
+
         runCatching {
-            advertiser?.startAdvertising(settings, data, advertiseCallback)
+            currentAdvertiser.startAdvertising(settings, advertiseData, scanResponseData, advertiseCallback)
         }.onSuccess {
             updateState { copy(isAdvertising = true) }
         }.onFailure { e ->
-            emitError(
-                BluetoothException.AdvertiseException(
-                    message = "Failed to start advertising",
-                    cause = e
-                )
-            )
+            Log.e(TAG, "Failed to start advertising", e)
+            emitError(BluetoothException.AdvertiseException(message = "StartAdvertising failed", cause = e))
         }
     }
 
-    /**
-     * Callback responding to data requests from connected clients.
-     */
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onCharacteristicReadRequest(
             device: BluetoothDevice,
@@ -132,65 +133,73 @@ class BluetoothController @Inject constructor(
             offset: Int,
             characteristic: BluetoothGattCharacteristic,
         ) {
+            Log.d(TAG, "GATT Read Request from ${device.address}")
             if (characteristic.uuid == CHARACTERISTIC_UUID) {
-                // Send the remaining data starting from the requested offset.
-                // Since the client requests MTU(512), the entire payload is likely sent in one response.
-                val valueToRead = if (offset > hostingPayload.size) ByteArray(0)
+                val valueToRead = if (offset >= hostingPayload.size) ByteArray(0)
                 else hostingPayload.copyOfRange(offset, hostingPayload.size)
-
-                gattServer?.sendResponse(
-                    device,
-                    requestId,
-                    BluetoothGatt.GATT_SUCCESS,
-                    offset,
-                    valueToRead
-                )
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, valueToRead)
             } else {
-                gattServer?.sendResponse(
-                    device,
-                    requestId,
-                    BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED,
-                    offset,
-                    ByteArray(0)
-                )
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED, offset, ByteArray(0))
             }
         }
     }
 
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartFailure(errorCode: Int) {
-            super.onStartFailure(errorCode)
+            Log.e(TAG, "Advertise start failed: $errorCode")
             updateState { copy(isAdvertising = false) }
         }
-
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-            super.onStartSuccess(settingsInEffect)
+            Log.i(TAG, "!!! BLE ADVERTISE STARTED SUCCESSFULLY !!!")
         }
     }
 
     private fun handleStartScan() {
-        if (scanner == null) return
+        Log.i(TAG, "Starting BLE Scan")
+        val currentScanner = scanner
+        if (currentScanner == null) {
+            Log.w(TAG, "Scanner is null - Bluetooth might be OFF")
+            return
+        }
 
-        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
-        val settings =
-            ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
 
         runCatching {
-            scanner?.startScan(listOf(filter), settings, scanCallback)
+            currentScanner.startScan(null, settings, scanCallback)
         }.onSuccess {
             updateState { copy(isScanning = true) }
         }.onFailure { e ->
-            emitError(BluetoothException.ScanException(message = "Failed to start scan", cause = e))
+            Log.e(TAG, "Failed to start scan", e)
+            emitError(BluetoothException.ScanException(message = "StartScan failed", cause = e))
         }
     }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
+            val scanRecord = result.scanRecord
+            
+            val serviceUuids = scanRecord?.serviceUuids
+            val isOurDevice = serviceUuids?.contains(ParcelUuid(SERVICE_UUID)) == true
+
+            if (!isOurDevice) return
+
+            val rawName = scanRecord.deviceName ?: device.name
+            val displayName = if (!rawName.isNullOrBlank()) {
+                rawName
+            } else {
+                "전송 대기 중 (${device.address.takeLast(5)})"
+            }
+
+            Log.i(TAG, "MATCH! Found target host: $displayName (${device.address})")
+
+
             val peer = Peer(
-                deviceName = device.name ?: "Unknown Device",
+                deviceName = displayName,
                 address = device.address,
-                port = 0, // Exact port is unknown at this stage
+                port = 0,
                 type = Peer.Type.BLUETOOTH
             )
 
@@ -198,99 +207,97 @@ class BluetoothController @Inject constructor(
                 copy(discoveredDevices = (discoveredDevices + peer).distinctBy { it.address })
             }
         }
+        override fun onScanFailed(errorCode: Int) {
+            Log.e(TAG, "Scan failed: $errorCode")
+        }
     }
 
     private fun handleConnectGatt(macAddress: String) {
+        Log.i(TAG, "Connecting GATT to $macAddress")
         val device = adapter?.getRemoteDevice(macAddress)
         if (device == null) {
-            emitError(BluetoothException.GattConnectionException(message = "Device not found."))
+            emitError(BluetoothException.GattConnectionException(message = "Device not found"))
             return
         }
 
-        handleStopScan() // Stop scanning immediately to improve connection stability
-        bluetoothGatt = device.connectGatt(context, false, gattClientCallback)
+        handleStopScan()
+        bluetoothGatt = device.connectGatt(context, false, gattClientCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
-    /**
-     * Asynchronous pipeline for 1:1 connection with the Host to fetch data.
-     */
     private val gattClientCallback = object : BluetoothGattCallback() {
-
-        //  Physical connection state changed
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.e(TAG, "GATT Error status: $status. closing.")
+                gatt.close()
+                return
+            }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                // Request bandwidth expansion to 512 bytes to bypass the default 20-byte limit
+                Log.i(TAG, "GATT Connected, requesting MTU")
                 gatt.requestMtu(512)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                Log.w(TAG, "GATT Disconnected")
                 gatt.close()
             }
         }
 
-        // Service discovery starts after MTU expansion is approved
         override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
-            super.onMtuChanged(gatt, mtu, status)
             if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.i(TAG, "MTU updated to $mtu, discovering services")
                 gatt?.discoverServices()
             }
         }
 
-        // Request data read after services are discovered
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                val characteristic =
-                    gatt.getService(SERVICE_UUID)?.getCharacteristic(CHARACTERISTIC_UUID)
-                characteristic?.let { gatt.readCharacteristic(it) }
+                val service = gatt.getService(SERVICE_UUID)
+                val characteristic = service?.getCharacteristic(CHARACTERISTIC_UUID)
+                if (characteristic != null) {
+                    gatt.readCharacteristic(characteristic)
+                } else {
+                    Log.e(TAG, "Handshake characteristic not found")
+                }
             }
         }
 
-        // Successfully received data (JSON) from the Host
-        override fun onCharacteristicRead(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            status: Int,
-        ) {
+        override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+            processReadData(value, status)
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            processReadData(characteristic.value ?: ByteArray(0), status)
+        }
+
+        private fun processReadData(value: ByteArray, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 runCatching {
-                    val jsonString = String(characteristic.value, Charsets.UTF_8)
+                    val jsonString = String(value, Charsets.UTF_8)
+                    Log.i(TAG, "Received Handshake: $jsonString")
                     val json = JSONObject(jsonString)
-
-                    val ip = json.getString("ip")
-                    val port = json.getInt("port")
-                    val ssid = json.optString("ssid", "")
-                    val pw = json.optString("pw", "")
-
-                    BluetoothEffect.HandshakeCompleted(ip, port, ssid, pw)
+                    BluetoothEffect.HandshakeCompleted(
+                        json.getString("ip"),
+                        json.getInt("port"),
+                        json.optString("ssid", ""),
+                        json.optString("pw", "")
+                    )
                 }.onSuccess { effect ->
                     emitEffect(effect)
                 }.onFailure { e ->
-                    emitError(
-                        BluetoothException.GattConnectionException(
-                            message = "Failed to parse BLE data",
-                            cause = e
-                        )
-                    )
+                    Log.e(TAG, "Data parse failed", e)
                 }.also {
-                    gatt.disconnect()
+                    bluetoothGatt?.disconnect()
                 }
             }
         }
     }
 
     private fun handleStopScan() {
-        runCatching {
-            scanner?.stopScan(scanCallback)
-        }.onFailure { e ->
-            Log.w("BluetoothController", "Security exception during stopScan: $e")
-        }
+        runCatching { scanner?.stopScan(scanCallback) }
         updateState { copy(isScanning = false) }
     }
 
     private fun handleStopAdvertising() {
-        runCatching {
-            advertiser?.stopAdvertising(advertiseCallback)
-        }.onFailure { e ->
-            Log.w("BluetoothController", "Security exception during stopAdvertising: $e")
-        }
+        runCatching { advertiser?.stopAdvertising(advertiseCallback) }
         gattServer?.clearServices()
         gattServer?.close()
         updateState { copy(isAdvertising = false) }

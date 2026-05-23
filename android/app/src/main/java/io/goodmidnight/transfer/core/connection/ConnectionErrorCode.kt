@@ -13,5 +13,9 @@ enum class ConnectionErrorCode(
     UNSUPPORTED_PEER_TYPE(
         message = "The selected peer type is not supported for connection.",
         code = "ORC001"
+    ),
+    CONNECTION_ERROR(
+        message = "An error occurred during the connection process.",
+        code = "ORC002"
     )
 }

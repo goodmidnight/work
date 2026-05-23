@@ -107,9 +107,9 @@ class ConnectivityController @Inject constructor(
                         )
                     }
                     if (isAutoConnect) {
-                        emitEffect(ConnectivityEffect.HotspotConnectedAndBound)
+                        emitEffect(ConnectivityEffect.HotspotConnectedAndBound(network.toString(), ipAddress))
                     } else {
-                        emitEffect(ConnectivityEffect.BindingEstablished(network.toString()))
+                        emitEffect(ConnectivityEffect.BindingEstablished(network.toString(), ipAddress))
                     }
                 } else {
                     emitError(ConnectivityException.BindingFailedException())
@@ -125,6 +125,7 @@ class ConnectivityController @Inject constructor(
                         localIp = null
                     )
                 }
+                emitEffect(ConnectivityEffect.NetworkLost(network.toString()))
             }
 
             override fun onUnavailable() {

@@ -12,23 +12,12 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import javax.inject.Inject
 
-/**
- * Handles Network Service Discovery (NSD / Bonjour / mDNS) for P2P connections over a shared Wi-Fi network.
- * It broadcasts the device's presence and discovers other devices running the same service.
- * Supports both Legacy (Pre-Android 14) resolving and Modern (Android 14+) continuous monitoring.
- */
 class NsdController @Inject constructor(
     @param:ApplicationContext private val context: Context,
 ) : BaseController<NsdState, NsdEvent, NsdEffect, NsdException>("NsdController", NsdState()) {
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-
-    // Executor required for Android 14+ (API 34) ServiceInfoCallback to run on a background thread.
     private val callbackExecutor = Executors.newSingleThreadExecutor()
-
-    // [Refactored] Thread-safe map to prevent ConcurrentModificationException during unregistration.
     private val activeServiceCallbacks = ConcurrentHashMap<String, NsdManager.ServiceInfoCallback>()
-
-    // Dynamically assigned by the OS upon successful registration to prevent naming collisions.
     private var myServiceName = ""
 
     override suspend fun handleEvent(event: NsdEvent) {
@@ -41,169 +30,113 @@ class NsdController @Inject constructor(
         }
     }
 
-    /**
-     * Begins searching the local network for other devices broadcasting our specific SERVICE_TYPE.
-     */
     private fun handleStartDiscovery() {
+        Log.d(TAG, "Starting discovery: type=$SERVICE_TYPE")
         updateState { copy(isDiscovering = true, discoveredPeers = emptyList()) }
         runCatching {
             nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
         }.onFailure { e ->
-            Log.w("NsdController", "Failed to start service discovery", e)
+            Log.e(TAG, "Failed to start service discovery", e)
+            updateState { copy(isDiscovering = false) }
         }
     }
 
-    /**
-     * Halts the ongoing discovery process and cleans up any active monitoring callbacks.
-     */
     private fun handleStopDiscovery() {
-        runCatching {
-            nsdManager.stopServiceDiscovery(discoveryListener)
-        }.onFailure { e ->
-            Log.w("NsdController", "Failed to stop discovery cleanly", e)
-        }
-
-        // Clean up all active monitoring callbacks for Android 14+ devices to prevent memory leaks.
+        Log.d(TAG, "Stopping discovery")
+        runCatching { nsdManager.stopServiceDiscovery(discoveryListener) }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             activeServiceCallbacks.values.forEach { callback ->
                 runCatching { nsdManager.unregisterServiceInfoCallback(callback) }
             }
             activeServiceCallbacks.clear()
         }
-
         updateState { copy(isDiscovering = false) }
     }
 
-    /**
-     * Registers this device's service on the local network so other peers can discover it.
-     */
     private fun handleStartBroadcasting(deviceName: String, port: Int) {
+        Log.i(TAG, "Starting broadcasting: Name=$deviceName, Port=$port")
         updateState { copy(isBroadcasting = true) }
-
         val serviceInfo = NsdServiceInfo().apply {
             this.serviceName = deviceName
             this.serviceType = SERVICE_TYPE
             this.port = port
         }
-
         runCatching {
-            nsdManager.registerService(
-                serviceInfo,
-                NsdManager.PROTOCOL_DNS_SD,
-                registrationListener
-            )
-        }.onFailure {
-            emitError(
-                NsdException.BroadcastException(
-                    message = "Failed to initiate service registration",
-                    errorCode = NsdErrorCode.BROADCAST_START_FAILED
-                )
-            )
+            nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
+        }.onFailure { e ->
+            Log.e(TAG, "Failed to initiate service registration", e)
+            emitError(NsdException.BroadcastException(message = "Registration failed", errorCode = NsdErrorCode.BROADCAST_START_FAILED))
+            updateState { copy(isBroadcasting = false) }
         }
     }
 
-    /**
-     * Unregisters the service, effectively hiding this device from the local network discovery.
-     */
     private fun handleStopBroadcasting() {
-        runCatching {
-            nsdManager.unregisterService(registrationListener)
-        }.onFailure { e ->
-            Log.w("NsdController", "Failed to unregister service cleanly", e)
-        }
+        Log.d(TAG, "Stopping broadcasting")
+        runCatching { nsdManager.unregisterService(registrationListener) }
         updateState { copy(isBroadcasting = false, myDeviceName = "") }
     }
-    /**
-     * Halts discovery and signals the UI/ConnectionManager to initiate a socket connection.
-     */
+
     private fun handleConnectToPeer(ipAddress: String, port: Int) {
+        Log.d(TAG, "Connecting to peer: $ipAddress:$port")
         handleStopDiscovery()
         emitEffect(NsdEffect.ConnectionEstablished(ipAddress, port))
     }
 
-    /**
-     * Factory function to create a new ResolveListener (Pre-Android 14).
-     * Note: NSD requires a unique listener instance for every single resolve request.
-     */
     private fun createResolveListener() = object : NsdManager.ResolveListener {
         override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-            Log.w("NsdController", "Resolve failed for ${serviceInfo.serviceName}: Code $errorCode")
+            Log.e(TAG, "Resolve failed for ${serviceInfo.serviceName}: Code $errorCode")
         }
-
-        @Suppress("DEPRECATION")
         override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
             val ip = serviceInfo.host?.hostAddress ?: return
+            Log.i(TAG, "Service resolved: ${serviceInfo.serviceName} at $ip:${serviceInfo.port}")
             addOrUpdatePeer(serviceInfo.serviceName, ip, serviceInfo.port)
         }
     }
-    /**
-     * Factory function to create a continuous monitoring callback (Android 14+).
-     */
+
     private fun createServiceInfoCallback(serviceName: String) =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             object : NsdManager.ServiceInfoCallback {
-                override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {}
-
+                override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
+                    Log.e(TAG, "ServiceInfoCallback registration failed for $serviceName: $errorCode")
+                }
                 override fun onServiceUpdated(updatedInfo: NsdServiceInfo) {
                     val ip = updatedInfo.hostAddresses.firstOrNull()?.hostAddress ?: return
+                    Log.i(TAG, "Service updated (API 34+): ${updatedInfo.serviceName} at $ip:${updatedInfo.port}")
                     addOrUpdatePeer(updatedInfo.serviceName, ip, updatedInfo.port)
                 }
-
-                override fun onServiceLost() {}
-
-                override fun onServiceInfoCallbackUnregistered() {
-                    activeServiceCallbacks.remove(serviceName)
-                }
+                override fun onServiceLost() { removePeer(serviceName) }
+                override fun onServiceInfoCallbackUnregistered() { activeServiceCallbacks.remove(serviceName) }
             }
         } else null
 
-    /**
-     * Safely adds a newly resolved peer to the state list or updates it if it already exists.
-     */
     private fun addOrUpdatePeer(name: String, ip: String, port: Int) {
         val newPeer = Peer(name, ip, port, Peer.Type.NSD)
         updateState {
-            copy(discoveredPeers = (discoveredPeers.filterNot { it.deviceName == name } + newPeer))
+            val updatedList = (discoveredPeers.filterNot { it.deviceName == name } + newPeer)
+            copy(discoveredPeers = updatedList)
         }
     }
 
-    /**
-     * Listener to monitor the lifecycle of broadcasting this device's service.
-     */
+    private fun removePeer(name: String) {
+        updateState { copy(discoveredPeers = discoveredPeers.filterNot { it.deviceName == name }) }
+    }
+
     private val registrationListener = object : NsdManager.RegistrationListener {
-        override fun onServiceRegistered(nsdServiceInfo: NsdServiceInfo) {
-            myServiceName = nsdServiceInfo.serviceName
+        override fun onServiceRegistered(si: NsdServiceInfo) {
+            Log.i(TAG, "Service registered: ${si.serviceName}")
+            myServiceName = si.serviceName
             updateState { copy(myDeviceName = myServiceName) }
         }
-
-        override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-            handleStopBroadcasting()
-            emitError(
-                NsdException.BroadcastException(
-                    message = "Failed to start broadcasting",
-                    errorCode = NsdErrorCode.BROADCAST_START_FAILED
-                )
-            )
-        }
-
-        override fun onServiceUnregistered(arg0: NsdServiceInfo) {
-            updateState { copy(isBroadcasting = false, myDeviceName = "") }
-        }
-
-        override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-            handleStopBroadcasting()
-        }
+        override fun onRegistrationFailed(si: NsdServiceInfo, errorCode: Int) { handleStopBroadcasting() }
+        override fun onServiceUnregistered(si: NsdServiceInfo) { updateState { copy(isBroadcasting = false, myDeviceName = "") } }
+        override fun onUnregistrationFailed(si: NsdServiceInfo, errorCode: Int) { handleStopBroadcasting() }
     }
 
-    /**
-     * Listener to monitor the discovery of other devices on the network.
-     */
     private val discoveryListener = object : NsdManager.DiscoveryListener {
-        override fun onDiscoveryStarted(regType: String) {}
-
+        override fun onDiscoveryStarted(regType: String) { Log.i(TAG, "Discovery started: $regType") }
         override fun onServiceFound(service: NsdServiceInfo) {
+            Log.d(TAG, "Service found: ${service.serviceName}")
             if (service.serviceName == myServiceName) return
-
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 val callback = createServiceInfoCallback(service.serviceName)
                 if (callback != null) {
@@ -214,33 +147,19 @@ class NsdController @Inject constructor(
                 nsdManager.resolveService(service, createResolveListener())
             }
         }
-
         override fun onServiceLost(service: NsdServiceInfo) {
-            //  Clean up callback explicitly when service leaves the network
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 activeServiceCallbacks.remove(service.serviceName)?.let { callback ->
                     runCatching { nsdManager.unregisterServiceInfoCallback(callback) }
                 }
             }
-            updateState {
-                copy(discoveredPeers = discoveredPeers.filterNot { it.deviceName == service.serviceName })
-            }
+            removePeer(service.serviceName)
         }
-
-        override fun onDiscoveryStopped(serviceType: String) {
-            updateState { copy(isDiscovering = false) }
-        }
-
-        override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-            handleStopDiscovery()
-        }
-
-        override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
-            handleStopDiscovery()
-        }
+        override fun onDiscoveryStopped(serviceType: String) { updateState { copy(isDiscovering = false) } }
+        override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) { handleStopDiscovery() }
+        override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) { handleStopDiscovery() }
     }
 
-    // Release Executor resources when Controller is destroyed
     override fun clear() {
         handleStopDiscovery()
         handleStopBroadcasting()
@@ -249,6 +168,7 @@ class NsdController @Inject constructor(
     }
 
     companion object {
-        private const val SERVICE_TYPE = "_transfer._tcp."
+        private const val TAG = "NsdController"
+        private const val SERVICE_TYPE = "_transfer._tcp"
     }
 }

@@ -19,14 +19,13 @@ import io.goodmidnight.transfer.core.connection.wifidirect.WifiDirectEffect
 import io.goodmidnight.transfer.core.connection.wifidirect.WifiDirectEvent
 import io.goodmidnight.transfer.core.base.BaseController
 import io.goodmidnight.transfer.core.exception.ApplicationException
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
  * The central Facade and Orchestrator for all P2P network operations.
- * It abstracts the complexity of individual hardware controllers (NSD, BLE, Wi-Fi Direct)
- * and provides a unified interface for the UI layer.
  */
 @Singleton
 class ConnectionOrchestrator @Inject constructor(
@@ -41,15 +40,11 @@ class ConnectionOrchestrator @Inject constructor(
 ) {
 
     init {
-        // Start continuously monitoring all underlying hardware controllers upon instantiation.
         observeStates()
         observeEffects()
         observeErrors()
     }
 
-    /**
-     * Routes incoming UI intents to the appropriate internal orchestration logic.
-     */
     override suspend fun handleEvent(event: ConnectionEvent) {
         when (event) {
             is ConnectionEvent.StartDiscovery -> startDiscovery(event.mode)
@@ -66,9 +61,8 @@ class ConnectionOrchestrator @Inject constructor(
             )
             is ConnectionEvent.StopHosting -> stopHosting()
             is ConnectionEvent.ConnectToHotspot -> {
-                // Cache IP and Port for later use once connection is successful.
-                updateState { copy(hostIp = event.hostIp, hostPort = 8080) }
-                // Command physical connection to the specified Wi-Fi network.
+                Log.i(TAG, "Connecting to hotspot: ${event.ssid}")
+                updateState { copy(hostIp = event.hostIp, hostPort = DEFAULT_SOCKET_PORT) }
                 connectivityController.processEvent(
                     ConnectivityEvent.ConnectToHotspot(event.ssid, event.pw)
                 )
@@ -76,14 +70,10 @@ class ConnectionOrchestrator @Inject constructor(
         }
     }
 
-    /**
-     * Initiates the device discovery process based on the requested protocol.
-     * Ensures any previous discovery sessions are halted to prevent hardware collisions.
-     */
     private suspend fun startDiscovery(mode: ConnectionMode) {
+        Log.i(TAG, "Starting discovery in mode: $mode")
         stopAllDiscovery()
 
-        // Reset the UI state for a fresh discovery session.
         updateState {
             copy(currentMode = mode, isDiscovering = true, discoveredPeers = emptyList())
         }
@@ -93,44 +83,32 @@ class ConnectionOrchestrator @Inject constructor(
             ConnectionMode.WIFI_DIRECT -> wifiDirectController.processEvent(WifiDirectEvent.StartDiscovery)
             ConnectionMode.BLUETOOTH -> bluetoothController.processEvent(BluetoothEvent.StartScan)
             ConnectionMode.HOTSPOT -> hotSpotController.processEvent(HotSpotEvent.StartHotspot)
-            ConnectionMode.AUTO -> nsdController.processEvent(NsdEvent.StartDiscovery)
+            ConnectionMode.AUTO -> {
+                Log.d(TAG, "AUTO mode: Starting NSD, BLE, and WiFi-Direct")
+                nsdController.processEvent(NsdEvent.StartDiscovery)
+                bluetoothController.processEvent(BluetoothEvent.StartScan)
+                wifiDirectController.processEvent(WifiDirectEvent.StartDiscovery)
+            }
         }
     }
 
-    /**
-     * Attempts to establish a socket-ready connection with the selected peer.
-     * The behavior differs significantly depending on the underlying hardware protocol.
-     */
     private suspend fun connectToPeer(peer: Peer) {
-        stopAllDiscovery() // Conserve battery and network bandwidth during connection phase.
+        Log.i(TAG, "Attempting to connect to peer: ${peer.deviceName} (${peer.type})")
+        stopAllDiscovery()
 
         when (peer.type) {
             Peer.Type.WIFI_DIRECT -> {
-                // Wi-Fi Direct requires an active OS-level handshake to form a P2P Group.
                 wifiDirectController.processEvent(WifiDirectEvent.ConnectToPeer(peer.address))
             }
             Peer.Type.NSD -> {
-                // NSD resolves IP immediately, allowing instant connection establishment.
-                updateState {
-                    copy(
-                        isConnected = true,
-                        hostIp = peer.address,
-                        hostPort = peer.port
-                    )
-                }
-                emitEffect(
-                    ConnectionEffect.ConnectionEstablished(
-                        hostIp = peer.address,
-                        port = peer.port,
-                        type = peer.type
-                    )
-                )
+                updateState { copy(isConnected = true, hostIp = peer.address, hostPort = peer.port) }
+                emitEffect(ConnectionEffect.ConnectionEstablished(peer.address, peer.port, peer.type))
             }
             Peer.Type.BLUETOOTH -> {
-                // Bluetooth requires an initial GATT handshake using the MAC address to retrieve SSID/PW/IP.
                 bluetoothController.processEvent(BluetoothEvent.ConnectGatt(peer.address))
             }
             else -> {
+                Log.e(TAG, "Unsupported peer type: ${peer.type}")
                 emitError(ConnectionException.UnsupportedPeerTypeException())
             }
         }
@@ -144,41 +122,33 @@ class ConnectionOrchestrator @Inject constructor(
         ssid: String?,
         pw: String?,
     ) {
+        Log.i(TAG, "Starting hosting: mode=$mode, deviceName=$deviceName")
         stopAllDiscovery()
         stopHosting()
-        updateState { copy(currentMode = mode, isHosting = true) }
+        updateState { copy(currentMode = mode, isHosting = true, hostPort = port) }
 
         val currentIp = connectivityController.state.value.localIp
 
         when (mode) {
-            ConnectionMode.NSD -> nsdController.processEvent(
-                NsdEvent.StartBroadcasting(deviceName, port)
-            )
+            ConnectionMode.NSD -> nsdController.processEvent(NsdEvent.StartBroadcasting(deviceName, port))
             ConnectionMode.WIFI_DIRECT -> wifiDirectController.processEvent(WifiDirectEvent.CreateGroup)
             ConnectionMode.HOTSPOT -> hotSpotController.processEvent(HotSpotEvent.StartHotspot)
             ConnectionMode.BLUETOOTH -> {
-                // Broadcast hotspot credentials via BLE Advertisement.
                 if (wifiIp != null) {
-                    bluetoothController.processEvent(
-                        BluetoothEvent.StartAdvertising(
-                            wifiIp = wifiIp,
-                            port = port,
-                            ssid = ssid ?: "",
-                            pw = pw ?: ""
-                        )
-                    )
+                    bluetoothController.processEvent(BluetoothEvent.StartAdvertising(wifiIp, port, ssid ?: "", pw ?: ""))
                 } else {
                     emitError(ConnectionException.UnsupportedPeerTypeException(cause = Throwable("IP is required for BLE hosting")))
                 }
             }
             ConnectionMode.AUTO -> {
+                Log.d(TAG, "AUTO mode hosting: Broadcasting on ALL protocols")
+                wifiDirectController.processEvent(WifiDirectEvent.CreateGroup)
                 if (!currentIp.isNullOrBlank() && currentIp != "0.0.0.0") {
                     nsdController.processEvent(NsdEvent.StartBroadcasting(deviceName, port))
-                    bluetoothController.processEvent(
-                        BluetoothEvent.StartAdvertising(currentIp, port, ssid ?: "", pw ?: "")
-                    )
+                    bluetoothController.processEvent(BluetoothEvent.StartAdvertising(currentIp, port, ssid ?: "", pw ?: ""))
                 } else {
                     hotSpotController.processEvent(HotSpotEvent.StartHotspot)
+                    bluetoothController.processEvent(BluetoothEvent.StartAdvertising(ANDROID_HOTSPOT_GATEWAY_IP, port, ssid ?: "", pw ?: ""))
                 }
             }
         }
@@ -192,7 +162,6 @@ class ConnectionOrchestrator @Inject constructor(
         updateState { copy(isHosting = false, activeSsid = null) }
     }
 
-    /** Safely halts all active hardware scanning processes. */
     private suspend fun stopAllDiscovery() {
         nsdController.processEvent(NsdEvent.StopDiscovery)
         wifiDirectController.processEvent(WifiDirectEvent.StopDiscovery)
@@ -200,18 +169,13 @@ class ConnectionOrchestrator @Inject constructor(
         updateState { copy(isDiscovering = false) }
     }
 
-    /** Completely tears down any active P2P groups, hotspots, and OS-level network bindings. */
     private suspend fun disconnectAll() {
         stopAllDiscovery()
         stopHosting()
         connectivityController.processEvent(ConnectivityEvent.ReleaseBinding)
-        // Reset state entirely while preserving the mode if necessary
         updateState { ConnectionState() }
     }
 
-    /**
-     * Listens to the state flows of all child controllers and merges their discovered peers.
-     */
     private fun observeStates() {
         controllerScope.launch {
             connectivityController.state.collect { connectivityState ->
@@ -219,177 +183,112 @@ class ConnectionOrchestrator @Inject constructor(
             }
         }
 
-        // Collect Discovered Peers from NSD (mDNS)
         controllerScope.launch {
-            nsdController.state.collect { nsdState ->
-                if (state.value.currentMode in listOf(ConnectionMode.NSD, ConnectionMode.AUTO)) {
-                    updateState {
-                        copy(discoveredPeers = (discoveredPeers + nsdState.discoveredPeers).distinctBy { it.address })
-                    }
+            combine(
+                nsdController.state,
+                wifiDirectController.state,
+                bluetoothController.state
+            ) { nsd, wfd, bt ->
+                Triple(nsd.discoveredPeers, wfd.discoveredPeers, bt.discoveredDevices)
+            }.collect { (nsdPeers, wfdPeers, btPeers) ->
+                val allPeers = (nsdPeers + wfdPeers + btPeers).distinctBy { 
+                    if (it.type == Peer.Type.BLUETOOTH) it.address else "${it.address}:${it.port}"
                 }
+                Log.v(TAG, "Merged Peers update: NSD:${nsdPeers.size}, WFD:${wfdPeers.size}, BT:${btPeers.size}")
+                updateState { copy(discoveredPeers = allPeers) }
             }
         }
 
-        // Collect Discovered Peers from Wi-Fi Direct
-        controllerScope.launch {
-            wifiDirectController.state.collect { wfdState ->
-                if (state.value.currentMode in listOf(ConnectionMode.WIFI_DIRECT, ConnectionMode.AUTO)) {
-                    updateState {
-                        copy(discoveredPeers = (discoveredPeers + wfdState.discoveredPeers).distinctBy { it.address })
-                    }
-                }
-            }
-        }
-
-        // Collect Discovered Devices from Bluetooth Low Energy (BLE)
-        controllerScope.launch {
-            bluetoothController.state.collect { btState ->
-                if (state.value.currentMode in listOf(ConnectionMode.BLUETOOTH, ConnectionMode.AUTO)) {
-                    updateState {
-                        copy(discoveredPeers = (discoveredPeers + btState.discoveredDevices).distinctBy { it.address })
-                    }
-                }
-            }
-        }
-
-        // Collect HotSpot Status and trigger process binding
         controllerScope.launch {
             hotSpotController.state.collect { hotSpotState ->
                 if (hotSpotState.isActive) {
-                    updateState {
-                        copy(
-                            isConnected = true,
-                            activeSsid = hotSpotState.ssid,
-                            hostIp = ANDROID_HOTSPOT_GATEWAY_IP
-                        )
-                    }
+                    updateState { copy(isConnected = true, activeSsid = hotSpotState.ssid, hostIp = ANDROID_HOTSPOT_GATEWAY_IP) }
                     connectivityController.processEvent(ConnectivityEvent.RequestBinding)
-
-                    emitEffect(
-                        ConnectionEffect.ConnectionEstablished(
-                            hostIp = ANDROID_HOTSPOT_GATEWAY_IP,
-                            port = DEFAULT_SOCKET_PORT,
-                            type = Peer.Type.HOTSPOT
-                        )
-                    )
                 }
             }
         }
     }
 
-    /**
-     * Centralized error handling. Propagates errors to the UI and rolls back temporary states.
-     */
-    private fun observeErrors() {
-        val errorFlows = listOf(
-            nsdController.error,
-            wifiDirectController.error,
-            hotSpotController.error,
-            bluetoothController.error,
-            connectivityController.error
-        )
-
-        errorFlows.forEach { errorFlow ->
-            controllerScope.launch {
-                errorFlow.collect { exception ->
-                    emitError(exception)
-                    // Rollback operational flags to prevent UI deadlock.
-                    updateState {
-                        copy(isDiscovering = false, isHosting = false, currentMode = ConnectionMode.AUTO)
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Monitors asynchronous effects from controllers to establish the final socket connection.
-     */
     private fun observeEffects() {
-        // Collect successful connection effects from NSD
         controllerScope.launch {
             nsdController.effect.collect { effect ->
                 if (effect is NsdEffect.ConnectionEstablished) {
-                    emitEffect(
-                        ConnectionEffect.ConnectionEstablished(
-                            hostIp = effect.ipAddress,
-                            port = effect.port,
-                            type = Peer.Type.NSD
-                        )
-                    )
+                    updateState { copy(isConnected = true, hostIp = effect.ipAddress, hostPort = effect.port) }
+                    emitEffect(ConnectionEffect.ConnectionEstablished(effect.ipAddress, effect.port, Peer.Type.NSD))
                 }
             }
         }
 
-        // Collect successful connection effects from Wi-Fi Direct
-        controllerScope.launch {
-            wifiDirectController.effect.collect { effect ->
-                if (effect is WifiDirectEffect.ConnectionEstablished) {
-                    updateState { copy(isConnected = true, hostIp = effect.groupOwnerIp) }
-                    connectivityController.processEvent(ConnectivityEvent.RequestBinding)
-
-                    emitEffect(
-                        ConnectionEffect.ConnectionEstablished(
-                            hostIp = effect.groupOwnerIp,
-                            port = DEFAULT_SOCKET_PORT,
-                            type = Peer.Type.WIFI_DIRECT
-                        )
-                    )
-                }
-            }
-        }
-
-        // Collect successful connection effects from Bluetooth
         controllerScope.launch {
             bluetoothController.effect.collect { effect ->
                 if (effect is BluetoothEffect.HandshakeCompleted) {
-                    updateState { copy(hostIp = effect.ip, hostPort = effect.port) }
-
-                    if (effect.ssid.isNotEmpty() && effect.pw.isNotEmpty()) {
-                        // rigger auto-connection using retrieved Hotspot credentials
-                        connectivityController.processEvent(
-                            ConnectivityEvent.ConnectToHotspot(effect.ssid, effect.pw)
-                        )
+                    if (effect.ssid.isNotEmpty()) {
+                        processEvent(ConnectionEvent.ConnectToHotspot(effect.ssid, effect.pw, effect.ip))
                     } else {
-                        // No Hotspot credentials (same Wi-Fi), proceed directly to transfer
-                        updateState { copy(isConnected = true) }
-                        emitEffect(
-                            ConnectionEffect.ConnectionEstablished(
-                                hostIp = effect.ip,
-                                port = effect.port,
-                                type = Peer.Type.BLUETOOTH
-                            )
-                        )
+                        updateState { copy(isConnected = true, hostIp = effect.ip, hostPort = effect.port) }
+                        emitEffect(ConnectionEffect.ConnectionEstablished(effect.ip, effect.port, Peer.Type.BLUETOOTH))
                     }
                 }
             }
         }
 
-        // Collect successful connection effects from Connectivity (Hotspot Binding)
+        controllerScope.launch {
+            wifiDirectController.effect.collect { effect ->
+                if (effect is WifiDirectEffect.ConnectionEstablished) {
+                    updateState { copy(isConnected = true, hostIp = effect.groupOwnerIp, hostPort = DEFAULT_SOCKET_PORT) }
+                    connectivityController.processEvent(ConnectivityEvent.RequestBinding)
+                    if (!state.value.isHosting) {
+                        emitEffect(ConnectionEffect.ConnectionEstablished(effect.groupOwnerIp, DEFAULT_SOCKET_PORT, Peer.Type.WIFI_DIRECT))
+                    }
+                }
+            }
+        }
+
         controllerScope.launch {
             connectivityController.effect.collect { effect ->
-                if (effect is ConnectivityEffect.HotspotConnectedAndBound) {
-                    val ip = state.value.hostIp ?: return@collect
-                    val port = state.value.hostPort
-
-                    updateState { copy(isConnected = true) }
-                    emitEffect(ConnectionEffect.ConnectionEstablished(ip, port, Peer.Type.HOTSPOT))
+                when (effect) {
+                    is ConnectivityEffect.BindingEstablished -> {
+                        val hostIp = state.value.hostIp ?: effect.localIp
+                        if (hostIp != null && !state.value.isHosting) {
+                            emitEffect(ConnectionEffect.ConnectionEstablished(hostIp, state.value.hostPort, Peer.Type.HOTSPOT))
+                        }
+                    }
+                    is ConnectivityEffect.HotspotConnectedAndBound -> {
+                        val hostIp = state.value.hostIp ?: effect.localIp
+                        if (hostIp != null && !state.value.isHosting) {
+                            emitEffect(ConnectionEffect.ConnectionEstablished(hostIp, state.value.hostPort, Peer.Type.HOTSPOT))
+                        }
+                    }
+                    is ConnectivityEffect.NetworkLost -> {
+                        updateState { copy(isConnected = false) }
+                        emitEffect(ConnectionEffect.ConnectionLost(Peer.Type.HOTSPOT))
+                    }
                 }
+            }
+        }
+    }
+
+    private fun observeErrors() {
+        controllerScope.launch {
+            nsdController.error.collect { error ->
+                emitError(ConnectionException.FailedConnectionException(error.message ?: "NSD Error", error))
+            }
+        }
+        controllerScope.launch {
+            bluetoothController.error.collect { error ->
+                emitError(ConnectionException.FailedConnectionException(error.message ?: "Bluetooth Error", error))
+            }
+        }
+        controllerScope.launch {
+            wifiDirectController.error.collect { error ->
+                emitError(ConnectionException.FailedConnectionException(error.message ?: "WifiDirect Error", error))
             }
         }
     }
 
     companion object {
-
-        /**
-         * Android OS defaults the LocalOnlyHotspot gateway IP to 192.168.43.1.
-         * Clients connecting to this device's hotspot must send socket data to this IP.
-         */
+        private const val TAG = "ConnectionOrchestrator"
         private const val ANDROID_HOTSPOT_GATEWAY_IP = "192.168.43.1"
-
-        /**
-         * Default port for file transfer sockets.
-         */
-        private const val DEFAULT_SOCKET_PORT = 8080
+        private const val DEFAULT_SOCKET_PORT = 50001
     }
 }
